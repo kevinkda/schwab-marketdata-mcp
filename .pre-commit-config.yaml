@@ -4,6 +4,22 @@
 # Bootstrap (run once after `git clone`):
 #     uv sync --extra dev
 #     uv run pre-commit install
+#
+# Design notes (2026-05 hardening):
+#   * ruff / ruff-format / mypy are wired as `repo: local` and shell out to
+#     `uv run`.  This pins the tool version to whatever is locked in
+#     `pyproject.toml` / `uv.lock`, so the hook can never disagree with the
+#     tool that developers and CI run directly.  It also avoids pre-commit
+#     having to download per-rev tool environments from PyPI / GitHub, which
+#     fails on locked-down corporate networks (e.g. Amazon dev-dsk) where
+#     `pip` and `git clone` over HTTPS hit `CERTIFICATE_VERIFY_FAILED`.
+#   * gitleaks is gated to `stages: [manual]` for the same reason: the
+#     upstream `gitleaks/gitleaks` repo ships a binary download that is not
+#     reachable from CDD environments.  Run it from a machine with public
+#     internet via:
+#         pre-commit run --hook-stage manual gitleaks --all-files
+#     `detect-secrets` is the always-on baseline-aware secret scanner that
+#     runs on every commit.
 
 repos:
   # ---------------------------------------------------------------------
@@ -26,15 +42,16 @@ repos:
         args: ["--fix=lf"]
 
   # ---------------------------------------------------------------------
-  # Secret scanning — gitleaks
+  # Secret scanning — gitleaks (manual stage only; needs public internet)
   # ---------------------------------------------------------------------
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.21.2
     hooks:
       - id: gitleaks
+        stages: [manual]
 
   # ---------------------------------------------------------------------
-  # Secret scanning — detect-secrets (baseline-aware)
+  # Secret scanning — detect-secrets (baseline-aware, always on)
   # ---------------------------------------------------------------------
   - repo: https://github.com/Yelp/detect-secrets
     rev: v1.5.0
@@ -51,31 +68,42 @@ repos:
           )$
 
   # ---------------------------------------------------------------------
-  # Lint + format — ruff
+  # Lint + format — ruff (driven by the project venv via `uv run` so the
+  # hook version is always identical to the one used by developers / CI).
   # ---------------------------------------------------------------------
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.8.6
+  - repo: local
     hooks:
       - id: ruff
-        args: ["--fix"]
+        name: ruff (lint, --fix)
+        entry: uv run ruff check --fix --force-exclude
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
+
       - id: ruff-format
+        name: ruff-format
+        entry: uv run ruff format --force-exclude
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
 
   # ---------------------------------------------------------------------
-  # Type check — mypy (only on src/, tests are looser)
+  # Type check — mypy (only on src/, tests are looser).
+  # Same rationale as ruff: drive from the project venv via `uv run` so
+  # that mypy sees the real project dependencies (pydantic, mcp, httpx,
+  # schwab-py, …) without pre-commit having to rebuild a parallel env.
   # ---------------------------------------------------------------------
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.13.0
+  - repo: local
     hooks:
       - id: mypy
+        name: mypy (--strict on src/)
+        entry: uv run mypy --strict --ignore-missing-imports
+        language: system
+        types: [python]
         files: ^src/
-        additional_dependencies:
-          - "pydantic>=2.6,<3"
-          - "mcp>=1.6,<2.0"
-          - "httpx>=0.28.1,<0.29"
-          - "types-python-dateutil"
-        args:
-          - "--strict"
-          - "--ignore-missing-imports"
+        require_serial: true
+        pass_filenames: false
+        args: ["src/"]
 
   # ---------------------------------------------------------------------
   # Local sanity hook — block the .gitignore footgun where uv.lock would
