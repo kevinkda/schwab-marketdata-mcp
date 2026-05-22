@@ -27,18 +27,18 @@ from .auth_logic import (
     make_token_write_func,
     preflight_summary,
 )
+from .bootstrap import bootstrap_dotenv
 from .errors import SchwabAuthError
 from .security import CLOUD_OPT_IN_FLAG
 
 
 def _bootstrap_dotenv() -> None:
-    """Load .env for ad-hoc CLI invocation.  Idempotent."""
-    try:
-        from dotenv import load_dotenv
+    """Load .env for ad-hoc CLI invocation.  Idempotent.
 
-        load_dotenv()
-    except ImportError:
-        pass
+    Thin wrapper around :func:`bootstrap.bootstrap_dotenv` kept for
+    backwards compatibility with the existing CLI call-site.
+    """
+    bootstrap_dotenv()
 
 
 def _run_login_flow(args: argparse.Namespace) -> int:
