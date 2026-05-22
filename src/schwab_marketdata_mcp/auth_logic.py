@@ -112,10 +112,7 @@ def _validate_login_flow_callback(callback: str) -> None:
     except ValueError as exc:
         raise SchwabAuthError(
             reason="callback_url_mismatch",
-            hint=(
-                f"SCHWAB_CALLBACK_URL has an invalid port component: {callback!r} "
-                f"({exc})."
-            ),
+            hint=(f"SCHWAB_CALLBACK_URL has an invalid port component: {callback!r} ({exc})."),
         ) from exc
     if port is None:
         raise SchwabAuthError(
