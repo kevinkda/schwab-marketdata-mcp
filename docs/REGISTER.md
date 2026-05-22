@@ -20,6 +20,7 @@
         "run",
         "schwab-marketdata-mcp"
       ],
+      "envFile": "${HOME}/code/kevinkda/schwab-marketdata-mcp/.env",
       "env": {
         "LOG_LEVEL": "WARNING",
         "SCHWAB_RATE_LIMIT_PER_MIN": "120"
@@ -30,19 +31,112 @@
 }
 ```
 
+### Why `envFile` is recommended (no longer strictly required)
+
+As of the bug-fix that introduced :mod:`schwab_marketdata_mcp.bootstrap`,
+the server now calls `bootstrap_dotenv()` immediately after stdio
+hardening, so `os.environ["SCHWAB_APP_KEY"]` is populated from a `.env`
+file in the **process working directory** even when the host did not
+inject it.  This means:
+
+* Hosts that **do** support an `envFile` directive (Cursor, VS Code) get
+  the cleanest setup — credentials live in the file pointed to by
+  `envFile`, the host keeps `~/.cursor/mcp.json` itself credential-free,
+  and the server-side dotenv loader sees host-provided values first
+  because `bootstrap_dotenv` calls `load_dotenv(override=False)`.
+* Hosts that **do not** support `envFile` (Claude Desktop today, plain
+  `uv run schwab-marketdata-mcp` from a shell, ad-hoc scripts) still
+  work as long as the server's cwd is the package checkout that
+  contains `.env`.  The `--directory <repo>` flag in the `args` array
+  ensures that whenever `uv run` is the launch command.
+
+In short: **`envFile` is the recommended path** because it keeps
+credentials in a host-managed location and makes the dependency on
+cwd implicit; **the cwd-`.env` fallback** is a guaranteed safety net so
+that a missing/unsupported `envFile` does not produce a hard
+`SchwabAuthError(reason="missing_credentials")` at the first tool call.
+
+Precedence (highest wins) when more than one source is present:
+
+1. Host-injected env (Cursor `env` map, shell `export`, Claude Desktop
+   wrapper script).
+2. `envFile` contents loaded by the host before launch.
+3. `.env` discovered by `bootstrap_dotenv()` in the server's cwd or
+   any parent directory (`override=False`, so this never clobbers
+   1 or 2).
+
+### Host compatibility for `envFile`
+
+| Host                | Field name | Notes |
+| ------------------- | ---------- | ----- |
+| **Cursor**          | `envFile`  | STDIO servers only.  Absolute path or `${workspaceFolder}/.env`.  Recommended. |
+| **VS Code**         | `envFile`  | Same semantics as Cursor.  Recommended. |
+| **Claude Desktop**  | _not supported_ | Use the cwd-`.env` fallback (preferred) or the wrapper-script fallback below. |
+| **Cline / Continue** | _varies by version_ | Use `envFile` if available; otherwise the cwd-`.env` fallback handles it transparently. |
+
+#### Fallback A — cwd-`.env` (preferred for hosts without `envFile`)
+
+The server now self-loads `.env` from its cwd (and parents) via
+`bootstrap_dotenv()` in `src/schwab_marketdata_mcp/bootstrap.py`.  As
+long as the host launches the server with `--directory <repo>` (or
+otherwise sets cwd to the package checkout), no further configuration
+is required.  This is the recommended fallback for Claude Desktop:
+
+```json
+{
+  "mcpServers": {
+    "schwab-marketdata": {
+      "command": "/abs/path/to/uv",
+      "args": [
+        "--directory",
+        "/abs/path/to/schwab-marketdata-mcp",
+        "run",
+        "schwab-marketdata-mcp"
+      ]
+    }
+  }
+}
+```
+
+#### Fallback B — wrapper script (only if you cannot set cwd)
+
+If you cannot pass `--directory` to the launcher (e.g. some Cline
+versions), use a wrapper script that sources `.env` itself before
+`exec`-ing the server.  Create `scripts/run-with-env.sh` (700,
+owner-only) in the repo:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
+[[ -f .env ]] && set -a && source .env && set +a
+exec uv run schwab-marketdata-mcp "$@"
+```
+
+then point `command` at the absolute path of that script and drop
+`envFile` from `mcp.json`.
+
 ### Mandatory adjustments
 
 * `command` — replace `${HOME}/.local/bin/uv` with the **absolute path**
   printed by `which uv`.  mise / pyenv / brew users will have a
   different prefix, e.g.
   `/Users/you/.local/share/mise/installs/python/3.12.x/bin/uv`.
-* `args[1]` — replace `${HOME}/code/kevinkda/schwab-marketdata-mcp`
-  with the absolute path to your local checkout.
+* `args[1]` and `envFile` — replace
+  `${HOME}/code/kevinkda/schwab-marketdata-mcp` with the absolute
+  path to your local checkout.  These two paths **must** match.
 * `${HOME}` may not be expanded by every Cursor version; if the server
   fails to start, substitute the literal absolute path.
+* Confirm `.env` exists at the path referenced by `envFile` and is
+  mode 600 (`chmod 600 .env`).  `.gitignore` already excludes it.
 
 ### Hard-no's
 
+* **Do NOT** copy `SCHWAB_APP_KEY` / `SCHWAB_APP_SECRET` /
+  `SCHWAB_CALLBACK_URL` into the `env` block of `mcp.json`.  Keep them
+  in `.env` only — that is the file `.gitignore` and pre-commit hooks
+  protect.  `mcp.json` is sometimes synced via dotfiles repos / IDE
+  sync, which is a credential-leak vector.
 * **Do NOT** add `SCHWAB_TOKEN_PATH` to `env`.  That env var is
   intentionally **not consulted** by the server (mcp.json is an
   attractive injection vector).  Use the `--config-dir` CLI flag
