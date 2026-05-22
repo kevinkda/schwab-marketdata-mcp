@@ -1,0 +1,8 @@
+{
+  "candles": [
+    {"datetime": 1700000000000, "open": 186.0, "high": 187.5, "low": 185.5, "close": 187.34, "volume": 51234567}
+  ],
+  "symbol": "AAPL",
+  "empty": false,
+  "previousClose": 186.50
+}
