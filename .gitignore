@@ -195,9 +195,9 @@ cython_debug/
 .abstra/
 
 # Visual Studio Code
-#   Visual Studio Code specific template is maintained in a separate VisualStudioCode.gitignore 
+#   Visual Studio Code specific template is maintained in a separate VisualStudioCode.gitignore
 #   that can be found at https://github.com/github/gitignore/blob/main/Global/VisualStudioCode.gitignore
-#   and can be added to the global gitignore or merged into this file. However, if you prefer, 
+#   and can be added to the global gitignore or merged into this file. However, if you prefer,
 #   you could uncomment the following to ignore the entire vscode folder
 # .vscode/
 # Temporary file for partial code execution
@@ -216,3 +216,24 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ----------------------------------------------------------------------------
+# schwab-marketdata-mcp project-specific entries (plan §3.3.4 §8.1)
+# ----------------------------------------------------------------------------
+
+# Secrets / runtime artifacts (precise paths to avoid glob footguns)
+.env
+.env.*
+!.env.example
+token.json
+*.token
+token.json.lock
+.secrets.baseline.local
+
+# Runtime state (must NEVER be committed; production data lives outside repo)
+usage.jsonl
+logs/
+
+# CRITICAL: keep uv.lock in repository (reverse rule, avoid being swallowed
+# by any earlier *.lock glob; we use precise token.json.lock above instead).
+!uv.lock
