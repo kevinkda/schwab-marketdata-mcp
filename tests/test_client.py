@@ -347,3 +347,105 @@ def test_to_dict_no_json_method() -> None:
     from schwab_marketdata_mcp.tools._runtime import _to_dict
 
     assert _to_dict("plain") == {"value": "plain"}
+
+
+# ---------------------------------------------------------------------------
+# User-Agent injection (Schwab Dashboard "Device Type" classifier)
+# ---------------------------------------------------------------------------
+
+
+def test_user_agent_format() -> None:
+    """USER_AGENT must include all three identifying tokens and no PII."""
+    ua = client.USER_AGENT
+    # Identifies our MCP server so Schwab Dashboard shows a recognisable name.
+    assert ua.startswith("schwab-marketdata-mcp/")
+    # Carries enough version triage info for Schwab support, and nothing else.
+    assert "python/" in ua
+    assert "schwab-py/" in ua
+    # Must NOT leak any developer-specific identifier.
+    forbidden = (
+        os.environ.get("USER", ""),
+        os.environ.get("HOSTNAME", ""),
+        os.environ.get("HOME", ""),
+    )
+    for token in forbidden:
+        if token:  # only guard real values; CI may not set these
+            assert token not in ua, f"User-Agent leaked env token: {token!r}"
+
+
+def test_inject_user_agent_sets_header() -> None:
+    """_inject_user_agent must mutate session.headers['User-Agent']."""
+    from schwab_marketdata_mcp.client import _inject_user_agent  # type: ignore[attr-defined]
+
+    class _Session:
+        def __init__(self) -> None:
+            self.headers: dict[str, str] = {}
+
+    class _SchwabLike:
+        def __init__(self) -> None:
+            self.session = _Session()
+
+    sc = _SchwabLike()
+    _inject_user_agent(sc)
+    assert sc.session.headers["User-Agent"] == client.USER_AGENT
+
+
+def test_inject_user_agent_missing_session_is_safe() -> None:
+    """A schwab client without ``.session`` must not raise (forward-compat)."""
+    from schwab_marketdata_mcp.client import _inject_user_agent  # type: ignore[attr-defined]
+
+    class _NoSession:
+        pass
+
+    _inject_user_agent(_NoSession())  # must not raise
+
+
+def test_inject_user_agent_missing_headers_is_safe() -> None:
+    """Session without ``.headers`` must not raise (forward-compat)."""
+    from schwab_marketdata_mcp.client import _inject_user_agent  # type: ignore[attr-defined]
+
+    class _BareSession:
+        pass
+
+    class _SchwabLike:
+        session = _BareSession()
+
+    _inject_user_agent(_SchwabLike())  # must not raise
+
+
+def test_inject_user_agent_swallows_attribute_errors() -> None:
+    """A pathological session whose headers raise on assignment must not break tools."""
+    from schwab_marketdata_mcp.client import _inject_user_agent  # type: ignore[attr-defined]
+
+    class _ExplodingHeaders:
+        def __setitem__(self, key: str, value: str) -> None:
+            raise RuntimeError("simulated header set failure")
+
+    class _Session:
+        headers = _ExplodingHeaders()
+
+    class _SchwabLike:
+        session = _Session()
+
+    _inject_user_agent(_SchwabLike())  # must not raise
+
+
+async def test_user_agent_propagates_through_httpx_session() -> None:
+    """End-to-end: a real httpx.AsyncClient with our UA emits it on every request.
+
+    Documents the integration contract: the way we mutate
+    ``session.headers["User-Agent"]`` is the documented httpx path for
+    outbound UA control, and respx confirms the header lands on the wire.
+    """
+    import httpx
+    import respx
+
+    async with respx.mock(base_url="https://api.schwabapi.com") as router:
+        route = router.get("/marketdata/v1/quotes/AAPL/quotes").respond(200, json={"AAPL": {"symbol": "AAPL"}})
+        async with httpx.AsyncClient(base_url="https://api.schwabapi.com") as session:
+            session.headers["User-Agent"] = client.USER_AGENT
+            resp = await session.get("/marketdata/v1/quotes/AAPL/quotes")
+            assert resp.status_code == 200
+        sent_ua = route.calls.last.request.headers.get("User-Agent")
+        assert sent_ua is not None
+        assert "schwab-marketdata-mcp/" in sent_ua

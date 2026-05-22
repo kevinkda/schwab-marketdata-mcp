@@ -19,6 +19,7 @@ import asyncio
 import logging
 import os
 import random
+import sys
 import time
 from collections import deque
 from collections.abc import Awaitable, Callable
@@ -58,6 +59,38 @@ DEFAULT_MAX_RETRIES_429: Final[int] = 2
 DEFAULT_MAX_RETRIES_5XX: Final[int] = 3
 DEFAULT_BACKOFF_BASE_SEC: Final[float] = 0.5
 RATE_LIMIT_WARN_THRESHOLD: Final[int] = 20  # tokens remaining → emit warning
+
+
+def _build_user_agent() -> str:
+    """Build a Schwab-Dashboard-recognisable User-Agent string.
+
+    Format: ``schwab-marketdata-mcp/<our-version> python/<py-ver> schwab-py/<lib-ver>``
+
+    The Schwab Developer Portal "Device Type" classifier inspects the
+    outbound User-Agent header.  Without an explicit UA, schwab-py inherits
+    httpx's generic default (``python-httpx/<ver>``), which the Dashboard
+    classifies as ``Unknown``.  Sending a stable, app-identifying UA flips
+    it to a recognisable label and gives Schwab's abuse-detection a clean
+    fingerprint for this MCP server.
+
+    Security: the UA is intentionally **public** — it carries only
+    package versions, never credentials, hostname, username, or token
+    state.  PII-free by construction.
+    """
+    from . import __version__ as _our_version
+
+    py_ver = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+    try:
+        import schwab as _schwab
+
+        schwab_ver = getattr(_schwab, "__version__", "unknown")
+    except Exception:  # pragma: no cover - defensive: schwab not installed in some test envs
+        schwab_ver = "unknown"
+    return f"schwab-marketdata-mcp/{_our_version} python/{py_ver} schwab-py/{schwab_ver}"
+
+
+#: Module-level constant so tests can assert on it without re-deriving.
+USER_AGENT: Final[str] = _build_user_agent()
 
 
 def _env_int(name: str, default: int) -> int:
@@ -484,7 +517,34 @@ def _make_real_client(token_path: Path) -> SchwabClientProtocol:
             enforce_enums=True,
             interactive=False,
         )
+    _inject_user_agent(client)
     return cast(SchwabClientProtocol, client)
+
+
+def _inject_user_agent(schwab_client: Any) -> None:
+    """Pin a stable, identifying User-Agent on the schwab-py session.
+
+    schwab-py (1.5.x) does not expose a ``user_agent`` constructor parameter
+    (see ``schwab.auth.easy_client`` → ``client_from_token_file``), but it
+    stores its ``AsyncOAuth2Client`` (a subclass of ``httpx.AsyncClient``)
+    on ``client.session``.  Setting ``session.headers["User-Agent"]`` on a
+    live ``httpx.Client`` is the documented path for outbound UA control —
+    every subsequent request inherits the merged client headers.
+
+    Failure here must never break the data path: if the schwab-py internals
+    move ``session`` (or rename ``headers``) in a future release, we log at
+    DEBUG and fall back to the library default UA.
+    """
+    try:
+        session = getattr(schwab_client, "session", None)
+        if session is None:
+            return
+        headers = getattr(session, "headers", None)
+        if headers is None:
+            return
+        headers["User-Agent"] = USER_AGENT
+    except Exception:  # pragma: no cover - defensive: never break tools on UA injection
+        log.debug("failed to inject User-Agent header on schwab session", exc_info=True)
 
 
 def make_client(token_path_arg: str | None = None) -> SchwabClientProtocol:
@@ -519,6 +579,7 @@ __all__ = [
     "DEFAULT_MAX_RETRIES_5XX",
     "DEFAULT_MAX_RETRIES_429",
     "DEFAULT_RATE_LIMIT_PER_MIN",
+    "USER_AGENT",
     "FakeSchwabClient",
     "RateLimitedClient",
     "RetryPolicy",

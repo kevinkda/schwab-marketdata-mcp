@@ -153,6 +153,29 @@ own `RotatingFileHandler` always writes to
 `${XDG_STATE_HOME}/schwab-marketdata-mcp/logs/server.log` (10 MB × 5
 rotated).
 
+### Outbound `User-Agent` identification
+
+Every request to `api.schwabapi.com` carries a stable, app-identifying
+`User-Agent` header:
+
+```text
+schwab-marketdata-mcp/<our-version> python/<py-ver> schwab-py/<lib-ver>
+```
+
+- The Schwab Developer Portal **Device Type** classifier inspects this
+  header; without it, schwab-py inherits httpx's generic
+  `python-httpx/<ver>` UA, which the Dashboard reports as `Unknown`.
+- The UA is intentionally PII-free — only package versions, never
+  credentials, hostname, username, or token state.
+- It is set on `client.session.headers` (the schwab-py `AsyncOAuth2Client`
+  is itself an `httpx.AsyncClient` subclass), so all 10 market-data
+  endpoints inherit it for free; the OAuth refresh round-trip uses the
+  same UA.
+- If a future schwab-py release moves or renames `session.headers`, the
+  injection helper degrades gracefully (logs at DEBUG, falls back to the
+  library default UA) — the data path **never** breaks because of UA
+  injection.
+
 ---
 
 ## 2.  Skill repo discovery
