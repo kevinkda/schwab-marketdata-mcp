@@ -89,6 +89,17 @@ _harden_stdio()
 
 
 # ---------------------------------------------------------------------------
+# 0b) Load .env from the current working directory before any business
+#     import reads SCHWAB_APP_KEY / SCHWAB_APP_SECRET / etc.  Host-injected
+#     env vars (Cursor mcp.json ``envFile``, Claude Desktop wrappers, plain
+#     shell exports) still win because ``override=False``.  See plan §3.3.
+# ---------------------------------------------------------------------------
+from .bootstrap import bootstrap_dotenv  # noqa: E402
+
+bootstrap_dotenv()
+
+
+# ---------------------------------------------------------------------------
 # Imports after hardening
 # ---------------------------------------------------------------------------
 
