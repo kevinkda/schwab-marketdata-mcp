@@ -1,0 +1,129 @@
+# cron.example — Schwab MCP health probe scheduling
+
+Pick the snippet matching your operating system and customize the path
+substitutions (`UV_BIN`, `REPO`).
+
+The probe schedule is biased toward the user's typical "active windows"
+(STRATEGY.md §2 — weekend evening + mid-week evening) so a near-expiry
+warning lands when there is a realistic chance the user is at the keyboard.
+A 4-hour fallback handles laptops that were closed during a scheduled run.
+
+---
+
+## macOS (launchd)
+
+Save as `~/Library/LaunchAgents/com.kevinkda.schwab-marketdata-mcp.health.plist`,
+then load with:
+
+```bash
+launchctl load -w ~/Library/LaunchAgents/com.kevinkda.schwab-marketdata-mcp.health.plist
+```
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.kevinkda.schwab-marketdata-mcp.health</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/YOURUSER/.local/bin/uv</string>
+        <string>--directory</string>
+        <string>/Users/YOURUSER/code/kevinkda/schwab-marketdata-mcp</string>
+        <string>run</string>
+        <string>python</string>
+        <string>-m</string>
+        <string>schwab_marketdata_mcp.health</string>
+    </array>
+
+    <!-- Primary cadence: Sunday 20:00 + Wednesday 21:00 (24h clock). -->
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict>
+            <key>Weekday</key><integer>0</integer>  <!-- Sunday -->
+            <key>Hour</key><integer>20</integer>
+            <key>Minute</key><integer>0</integer>
+        </dict>
+        <dict>
+            <key>Weekday</key><integer>3</integer>  <!-- Wednesday -->
+            <key>Hour</key><integer>21</integer>
+            <key>Minute</key><integer>0</integer>
+        </dict>
+    </array>
+
+    <!-- Lid-close fallback: launchd misses StartCalendarInterval while the
+         laptop is sleeping and DOES NOT auto-catch-up. StartInterval=14400
+         (4h) ensures we re-probe shortly after wake. -->
+    <key>StartInterval</key>
+    <integer>14400</integer>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/YOURUSER/.local/state/schwab-marketdata-mcp/logs/health.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/YOURUSER/.local/state/schwab-marketdata-mcp/logs/health.err.log</string>
+</dict>
+</plist>
+```
+
+> Replace `YOURUSER` with the output of `whoami`.  If you use mise / pyenv,
+> point `ProgramArguments[0]` at the absolute path returned by `which uv`.
+
+After loading, run `bash scripts/notifier-self-test.sh` once to confirm
+`osascript` actually fires a notification.
+
+---
+
+## Linux (crontab)
+
+Append to `crontab -e`:
+
+```cron
+# Schwab MCP token health probe — primary slots (24h clock).
+MAILTO=""   # leave empty unless you have sendmail / msmtp configured.
+0 20 * * 0 cd "$HOME/code/kevinkda/schwab-marketdata-mcp" && "$HOME/.local/bin/uv" run python -m schwab_marketdata_mcp.health >> "$HOME/.local/state/schwab-marketdata-mcp/logs/health.out.log" 2>> "$HOME/.local/state/schwab-marketdata-mcp/logs/health.err.log"
+0 21 * * 3 cd "$HOME/code/kevinkda/schwab-marketdata-mcp" && "$HOME/.local/bin/uv" run python -m schwab_marketdata_mcp.health >> "$HOME/.local/state/schwab-marketdata-mcp/logs/health.out.log" 2>> "$HOME/.local/state/schwab-marketdata-mcp/logs/health.err.log"
+
+# 4h fall-back so we still notice <12h-to-expiry on a workday.
+0 */4 * * * cd "$HOME/code/kevinkda/schwab-marketdata-mcp" && "$HOME/.local/bin/uv" run python -m schwab_marketdata_mcp.health >> "$HOME/.local/state/schwab-marketdata-mcp/logs/health.out.log" 2>> "$HOME/.local/state/schwab-marketdata-mcp/logs/health.err.log"
+```
+
+If you have `sendmail` / `msmtp` installed, set `MAILTO=you@example.com` —
+cron will send the script's stderr output to that address whenever the
+probe exits with code 2 (critical).
+
+---
+
+## Why this schedule?
+
+- **Sunday 20:00 / Wednesday 21:00** — the typical "I am at the desk"
+  windows for a part-time investor.  Mid-week catches the case where
+  Monday's open invalidated something; weekend catches Friday-late drifts.
+- **4h fallback** — `launchd` does not back-fill missed
+  `StartCalendarInterval` runs across sleep; `crontab` skips closed-laptop
+  runs entirely.  The 4-hour `StartInterval` guarantees we catch any drift
+  within a quarter-day of waking up.
+- **Long lid-close caveat** — if the laptop is closed for >4 h continuously
+  (travel, vacation), it is the user's responsibility to manually run
+  `uv run python -m schwab_marketdata_mcp.health` after waking.  The README
+  documents this explicitly.
+
+---
+
+## Verifying the schedule
+
+```bash
+# Run the probe now to populate logs/health.{out,err}.log
+uv run python -m schwab_marketdata_mcp.health
+echo "exit code: $?"
+
+# Look at the structured log line
+tail -1 ~/.local/state/schwab-marketdata-mcp/logs/health.err.log
+
+# Confirm notifier (macOS / Linux only — see notifier-self-test.sh)
+bash scripts/notifier-self-test.sh
+```
