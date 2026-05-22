@@ -1,0 +1,7 @@
+{
+  "status": "SUCCESS",
+  "expirationList": [
+    {"expirationDate": "2026-06-19", "daysToExpiration": 30, "expirationType": "M"},
+    {"expirationDate": "2026-07-17", "daysToExpiration": 58, "expirationType": "M"}
+  ]
+}

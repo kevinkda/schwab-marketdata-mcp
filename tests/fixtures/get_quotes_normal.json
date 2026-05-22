@@ -1,0 +1,5 @@
+{
+  "AAPL": {"symbol": "AAPL", "quote": {"lastPrice": 187.34}},
+  "MSFT": {"symbol": "MSFT", "quote": {"lastPrice": 415.20}},
+  "GOOGL": {"symbol": "GOOGL", "quote": {"lastPrice": 142.10}}
+}

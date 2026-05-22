@@ -1,0 +1,27 @@
+{
+  "AAPL": {
+    "assetMainType": "EQUITY",
+    "assetSubType": "COE",
+    "symbol": "AAPL",
+    "quote": {
+      "lastPrice": 187.34,
+      "openPrice": 186.10,
+      "highPrice": 188.42,
+      "lowPrice": 185.78,
+      "closePrice": 186.50,
+      "totalVolume": 51234567,
+      "quoteTime": 1700000000000,
+      "tradeTime": 1700000000000,
+      "bidPrice": 187.32,
+      "askPrice": 187.36,
+      "bidSize": 200,
+      "askSize": 100,
+      "netChange": 0.84,
+      "netPercentChange": 0.45
+    },
+    "regular": {
+      "regularMarketLastPrice": 187.34,
+      "regularMarketNetChange": 0.84
+    }
+  }
+}

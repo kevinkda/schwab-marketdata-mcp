@@ -1,0 +1,21 @@
+{
+  "symbol": "AAPL",
+  "status": "SUCCESS",
+  "underlying": {"symbol": "AAPL", "last": 187.34},
+  "strategy": "SINGLE",
+  "interval": 0,
+  "callExpDateMap": {
+    "2026-06-19:30": {
+      "190.0": [
+        {"putCall": "CALL", "symbol": "AAPL  260619C00190000", "bid": 1.20, "ask": 1.30, "last": 1.25, "delta": 0.42}
+      ]
+    }
+  },
+  "putExpDateMap": {
+    "2026-06-19:30": {
+      "180.0": [
+        {"putCall": "PUT", "symbol": "AAPL  260619P00180000", "bid": 0.95, "ask": 1.05, "last": 1.00, "delta": -0.31}
+      ]
+    }
+  }
+}

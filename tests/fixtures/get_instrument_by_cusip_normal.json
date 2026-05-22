@@ -1,0 +1,5 @@
+{
+  "instruments": [
+    {"cusip": "037833100", "symbol": "AAPL", "description": "Apple Inc.", "exchange": "NASDAQ", "assetType": "EQUITY", "fundamental": {"high52": 199.62, "low52": 124.17}}
+  ]
+}

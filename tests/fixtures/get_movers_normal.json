@@ -1,0 +1,6 @@
+{
+  "screeners": [
+    {"description": "Apple Inc.", "symbol": "AAPL", "lastPrice": 187.34, "netChange": 5.20, "netPercentChange": 2.85, "volume": 65000000},
+    {"description": "Microsoft", "symbol": "MSFT", "lastPrice": 415.20, "netChange": 8.10, "netPercentChange": 1.99, "volume": 28000000}
+  ]
+}
