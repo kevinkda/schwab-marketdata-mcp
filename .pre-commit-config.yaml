@@ -1,0 +1,92 @@
+# Pre-commit hooks for schwab-marketdata-mcp.
+# Plan §3.3.4 — gitleaks + detect-secrets + ruff + mypy.
+#
+# Bootstrap (run once after `git clone`):
+#     uv sync --extra dev
+#     uv run pre-commit install
+
+repos:
+  # ---------------------------------------------------------------------
+  # Generic hygiene
+  # ---------------------------------------------------------------------
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-json
+        exclude: ^tests/fixtures/.*\.json$  # fixtures may have intentional edge cases
+      - id: check-added-large-files
+        args: ["--maxkb=512"]
+      - id: detect-private-key
+      - id: check-merge-conflict
+      - id: mixed-line-ending
+        args: ["--fix=lf"]
+
+  # ---------------------------------------------------------------------
+  # Secret scanning — gitleaks
+  # ---------------------------------------------------------------------
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.21.2
+    hooks:
+      - id: gitleaks
+
+  # ---------------------------------------------------------------------
+  # Secret scanning — detect-secrets (baseline-aware)
+  # ---------------------------------------------------------------------
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        args:
+          - "--baseline"
+          - ".secrets.baseline"
+        exclude: |
+          (?x)^(
+              uv\.lock|
+              \.secrets\.baseline|
+              tests/fixtures/.*\.json
+          )$
+
+  # ---------------------------------------------------------------------
+  # Lint + format — ruff
+  # ---------------------------------------------------------------------
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.6
+    hooks:
+      - id: ruff
+        args: ["--fix"]
+      - id: ruff-format
+
+  # ---------------------------------------------------------------------
+  # Type check — mypy (only on src/, tests are looser)
+  # ---------------------------------------------------------------------
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.13.0
+    hooks:
+      - id: mypy
+        files: ^src/
+        additional_dependencies:
+          - "pydantic>=2.6,<3"
+          - "mcp>=1.6,<2.0"
+          - "httpx>=0.28.1,<0.29"
+          - "types-python-dateutil"
+        args:
+          - "--strict"
+          - "--ignore-missing-imports"
+
+  # ---------------------------------------------------------------------
+  # Local sanity hook — block the .gitignore footgun where uv.lock would
+  # be excluded (we depend on the `!uv.lock` reverse rule).
+  # ---------------------------------------------------------------------
+  - repo: local
+    hooks:
+      - id: ensure-uv-lock-tracked
+        name: ensure uv.lock is tracked (.gitignore reverse rule)
+        entry: scripts/ensure-uv-lock-tracked.sh
+        language: script
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit]
