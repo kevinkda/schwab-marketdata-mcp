@@ -183,4 +183,6 @@ uv run pre-commit install
 bash scripts/local-ci.sh   # equivalent to GitHub Actions
 ```
 
-License: see [LICENSE](LICENSE).
+## License
+
+MIT License — see [LICENSE](./LICENSE).
