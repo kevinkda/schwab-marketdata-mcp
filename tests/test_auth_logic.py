@@ -218,9 +218,7 @@ def test_load_credentials_rejects_non_loopback_host() -> None:
     structured error before schwab-py spawns a multiprocess server.
     """
     with pytest.raises(SchwabAuthError) as ei:
-        load_credentials_from_env(
-            _ok_env("https://dev-dsk-example.us-east-1.amazon.com:8182")
-        )
+        load_credentials_from_env(_ok_env("https://dev-dsk-example.us-east-1.amazon.com:8182"))
     assert ei.value.reason == "callback_url_mismatch"
     assert "127.0.0.1" in ei.value.hint
 
@@ -275,9 +273,7 @@ def test_default_callback_is_high_port_loopback() -> None:
     the strict validator — otherwise the default would always trigger the
     error we just added.
     """
-    _, _, returned = load_credentials_from_env(
-        {"SCHWAB_APP_KEY": "k", "SCHWAB_APP_SECRET": "s"}
-    )
+    _, _, returned = load_credentials_from_env({"SCHWAB_APP_KEY": "k", "SCHWAB_APP_SECRET": "s"})
     assert returned == DEFAULT_LOGIN_FLOW_CALLBACK
     assert "127.0.0.1" in DEFAULT_LOGIN_FLOW_CALLBACK
     assert ":8182" in DEFAULT_LOGIN_FLOW_CALLBACK
