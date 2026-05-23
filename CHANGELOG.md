@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `get_streaming_snapshot` tool (experimental): bounded WebSocket
+  snapshot for `LEVELONE_EQUITIES` (real-time bid/ask/last/volume) or
+  `CHART_EQUITY` (real-time 1-minute candles). Wraps schwab-py
+  `StreamerClient` with a 500 ms - 10 s duration cap (default 2 s) and
+  caps `symbols` at 20. Long-running subscriptions remain out of scope
+  per plan §10; this addresses the v0.1.0 user request for "real-time"
+  data without restructuring `server.py` to a daemon model. Tool list
+  grew from 12 to 13.
+- `tests/test_streaming.py` adds 12 unit tests with a mocked streamer
+  (no real Schwab WebSocket): 5 input-validation boundaries, 5
+  behavioural cases (happy-path L1, CHART_EQUITY candle, no-message,
+  multi-frame aggregation, finally-block disconnect), and 2 server-
+  layer integration cases.
+
 ## [0.1.0] - 2026-05-23
 
 ### Added

@@ -10,8 +10,9 @@
 ![Release](https://img.shields.io/github/v/release/kevinkda/schwab-marketdata-mcp)
 
 生产级 **Model Context Protocol（MCP）** 服务端，把 Charles Schwab 的
-**Market Data Production** API 封装为 **12 个 tool**（10 个 endpoint + 2 个元
-工具），可在 Cursor、Claude Code 以及任何支持 MCP 的 agent 中调用。
+**Market Data Production** API 封装为 **13 个 tool**（10 个 endpoint +
+2 个元工具 + 1 个实验性 streaming snapshot），可直接接入 Cursor、Claude
+Code 以及任何兼容 MCP 协议的 AI agent。
 
 > **只读** —— 本项目仅调用 Schwab Market Data API，**不**调用 Schwab Trader
 > API，**不会**下单。Schwab 服务条款相关说明见 [合规使用](#合规使用)。
@@ -124,7 +125,7 @@ uv run pytest --cov                              # 整体 ≥85%，关键模块 
 - **不可二次分发数据约束** —— 配套的 workflows skill 在写入前会先调用
   `gh repo view --json isPrivate`，拒绝把 Schwab 数据写入公开仓库。
 
-### 工具面 —— 12 个 MCP tool
+### 工具面 —— 13 个 MCP tool
 
 名字 → endpoint 速查表：
 
@@ -142,6 +143,7 @@ uv run pytest --cov                              # 整体 ≥85%，关键模块 
 | 10 | `get_instrument_by_cusip`     | `GET /instruments/{cusip_id}`              |
 | 11 | `health_check`                | 本地 —— token 寿命 + 最近错误数            |
 | 12 | `get_server_info`             | 本地 —— 版本号 + 支持的 tool 列表          |
+| 13 | `get_streaming_snapshot` 🧪    | Streamer WebSocket —— 有界快照（实验性）   |
 
 每个 tool 的详细说明见下文。
 
@@ -275,8 +277,31 @@ uv run pytest --cov                              # 整体 ≥85%，关键模块 
 - **入参**：无。
 - **返回**：
   `{server_version, mcp_sdk_version, schwab_py_version,
-  supported_tools: [...12 个 tool 名], platform_supported_v1}`
+  supported_tools: [...13 个 tool 名], platform_supported_v1}`
 - **示例**：`{}`
+
+#### 实验性 —— 有界 streaming snapshot（1 个）
+
+##### `get_streaming_snapshot` 🧪 —— 有界 WebSocket 快照
+
+- **何时用**：需要准实时 bid/ask/last（亚秒级新鲜度）或一根实时 1
+  分钟 K 线，而 REST 的 `get_quote` / `get_price_history` 的 5–15 秒
+  延迟不够用。tool 会打开 Schwab Streamer WebSocket，按指定时长收消息
+  后断开 —— 适配 MCP 的请求-响应语义，不持有长连接订阅。
+- **入参**：`symbols`（list[str]，≤ 20）、`service`
+  （`LEVELONE_EQUITIES` 取实时 bid/ask/last/volume **或**
+  `CHART_EQUITY` 取实时 1 分钟 K 线）、
+  `duration_ms?`（int，默认 2000，硬上下界 500 – 10000）。
+- **返回**：
+  `{service, symbols_requested, symbols_received, duration_ms,
+  messages_count, snapshots: {sym: [{ts, bid|open, ask|high, ...}, ...]},
+  metadata: {first_message_at, last_message_at, connection_duration_ms}}`
+- **示例**：
+  `{"symbols": ["VOO", "QQQ"], "service": "LEVELONE_EQUITIES",
+  "duration_ms": 2000}`
+- **注意**：每次调用都要建连 / 鉴权 / 订阅 / 关连接，单次约 300–500 ms
+  开销；不要频繁调用。长连接订阅模式留待 v0.3+ 的独立 streaming MCP
+  server（计划 §10）。
 
 > 完整入参 / 出参 schema、边界情况、重试语义与端到端 playbook 见配套
 > skill 仓库 [`schwab-marketdata-skill`](https://github.com/kevinkda/schwab-marketdata-skill)。
@@ -309,7 +334,7 @@ uv run pytest --cov                              # 整体 ≥85%，关键模块 
 | `YEAR_TO_DATE` | `DAILY` / `WEEKLY`               | 年初至今 |
 
 > Schwab Market Data API **不提供**亚分钟级 K 线（秒级、tick 级）。如需
-> 实时分钟级 K 线，请关注后续 Streaming snapshot tool（v0.2 P1 候选）。
+> 实时分钟级 K 线，请使用实验性 `get_streaming_snapshot` tool（`service="CHART_EQUITY"`）。
 
 #### Schwab Market Data API **不提供**的数据类型
 
