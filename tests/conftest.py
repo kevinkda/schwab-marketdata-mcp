@@ -49,7 +49,14 @@ def _isolate_xdg_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Itera
     monkeypatch.setenv("XDG_STATE_HOME", str(state))
     # Also make the test's cwd a clean dir so any accidental relative path is harmless.
     monkeypatch.chdir(tmp_path)
-    return state
+    # Reset the DuckDB cache singleton so it re-opens under the new XDG path.
+    from schwab_marketdata_mcp import cache as _cache_mod
+
+    _cache_mod.reset_cache_singleton()
+    try:
+        yield state
+    finally:
+        _cache_mod.reset_cache_singleton()
 
 
 @pytest.fixture
@@ -63,11 +70,14 @@ def use_fake_backend(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setenv("SCHWAB_MOCK_FIXTURES_DIR", str(FIXTURES_DIR))
     monkeypatch.setenv("SCHWAB_MOCK_SCENARIO", "normal")
     # Reset the cached client between tests
+    from schwab_marketdata_mcp import cache
     from schwab_marketdata_mcp.tools import _runtime as rt
 
     rt.reset_client_cache()
+    cache.reset_cache_singleton()
     yield
     rt.reset_client_cache()
+    cache.reset_cache_singleton()
 
 
 @pytest.fixture

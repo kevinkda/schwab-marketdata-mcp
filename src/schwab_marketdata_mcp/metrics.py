@@ -45,6 +45,7 @@ def record(
     error_class: str | None,
     latency_ms: int,
     path: Path | None = None,
+    cache_status: str | None = None,
 ) -> None:
     """Append a single JSON line to usage.jsonl.
 
@@ -55,13 +56,15 @@ def record(
     if status not in {"ok", "err"}:
         raise ValueError(f"status must be 'ok' or 'err', got {status!r}")
     target = path or usage_path()
-    payload = {
+    payload: dict[str, Any] = {
         "ts": _utc_now_iso(),
         "tool": tool,
         "status": status,
         "error_class": error_class,
         "latency_ms": int(latency_ms),
     }
+    if cache_status is not None:
+        payload["cache_status"] = cache_status
     line = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
     try:
         target.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
@@ -83,6 +86,9 @@ def time_tool(tool: str, *, path: Path | None = None) -> Iterator[dict[str, Any]
     On exception (any subclass of :class:`Exception`), the recorded ``status``
     is ``"err"`` and ``error_class`` is the exception's qualified class name.
     The exception is **re-raised**, never swallowed.
+
+    Callers may set ``state["cache_status"]`` inside the ``with`` block to
+    record one of ``"hit" | "miss" | "bypass" | "disabled"``.
     """
     start = time.perf_counter()
     state: dict[str, Any] = {"tool": tool, "status": "ok", "error_class": None}
@@ -100,6 +106,7 @@ def time_tool(tool: str, *, path: Path | None = None) -> Iterator[dict[str, Any]
             error_class=state["error_class"],
             latency_ms=latency_ms,
             path=path,
+            cache_status=state.get("cache_status"),
         )
 
 

@@ -328,3 +328,47 @@ def test_serialise_round_trip_with_default_str() -> None:
     payload = {"AAPL": {"now": datetime(2026, 1, 1, tzinfo=UTC)}}
     s = json.dumps(payload, default=str)
     assert "2026-01-01" in s
+
+
+# ---------------------------------------------------------------------------
+# Integration smoke — call_endpoint wires cache hit/miss into payload
+# ---------------------------------------------------------------------------
+
+
+async def test_call_endpoint_records_cache_status_on_miss(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    use_fake_backend: None,
+) -> None:
+    """First call → miss + write; second call → hit (no API)."""
+    del use_fake_backend  # consumed via fixture
+    from schwab_marketdata_mcp import server
+
+    out1 = await server.get_quote(symbol="AAPL")
+    assert out1.get("_cache_status") == "miss"
+    out2 = await server.get_quote(symbol="AAPL")
+    assert out2.get("_cache_status") == "hit"
+
+
+async def test_call_endpoint_bypass_skips_cache(
+    monkeypatch: pytest.MonkeyPatch,
+    use_fake_backend: None,
+) -> None:
+    del use_fake_backend
+    from schwab_marketdata_mcp import server
+
+    monkeypatch.setenv("SCHWAB_CACHE_BYPASS", "1")
+    out = await server.get_quote(symbol="AAPL")
+    assert out.get("_cache_status") == "bypass"
+
+
+async def test_call_endpoint_disabled_skips_cache(
+    monkeypatch: pytest.MonkeyPatch,
+    use_fake_backend: None,
+) -> None:
+    del use_fake_backend
+    from schwab_marketdata_mcp import server
+
+    monkeypatch.setenv("SCHWAB_CACHE_ENABLED", "false")
+    out = await server.get_quote(symbol="AAPL")
+    assert out.get("_cache_status") == "disabled"
