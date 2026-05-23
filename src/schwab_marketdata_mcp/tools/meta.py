@@ -14,6 +14,7 @@ from typing import Any
 import mcp
 import schwab
 
+from .. import metrics
 from ..cache import cache_enabled, get_cache
 from ..metrics import recent_error_count_24h
 from ..models import supported_tool_names
@@ -22,6 +23,11 @@ from ..security import (
     check_token_file_state,
     resolve_token_path,
 )
+
+# Error rate thresholds for the health_check state machine (Sprint v0.3
+# observability candidate E).  Documented in docs/SLO.md.
+DEGRADED_ERROR_RATE_THRESHOLD: float = 0.05
+UNHEALTHY_ERROR_RATE_THRESHOLD: float = 0.20
 
 
 def _safe_token_state() -> tuple[TokenState, dict[str, Any] | None]:
@@ -80,19 +86,51 @@ async def health_check_impl() -> dict[str, Any]:
             pass
 
     cache_summary = _safe_cache_summary()
+    err_window = metrics.recent_errors_window(window_minutes=5, last_n=5)
+    error_rate = float(err_window["error_rate"])
+    overall_status = _classify_overall_status(state, error_rate)
     return {
         "server_version": _SERVER_VERSION,
+        "overall_status": overall_status,
         "token_state": state.value,
         "token_age_days": token_age_days,
         "token_expires_in_days": expires_in_days,
         "last_request_status": "unknown",  # filled in once we add a counter
         "rate_limit_remaining_per_min": _rate_limit_budget(),
         "recent_error_count_24h": recent_error_count_24h(),
+        "error_rate_5min": error_rate,
+        "error_count_5min": int(err_window["error_count"]),
+        "total_calls_5min": int(err_window["total_calls"]),
+        "last_errors": err_window["last_errors"],
         "platform_supported": True,
         "cache_enabled": cache_summary["enabled"],
         "cache_size_mb": cache_summary["size_mb"],
         "cache_hit_rate_24h": cache_summary["hit_rate_24h"],
     }
+
+
+def _classify_overall_status(token_state: TokenState, error_rate: float) -> str:
+    """Collapse signals to ``healthy`` / ``degraded`` / ``unhealthy``.
+
+    Rules (mirrors docs/SLO.md):
+
+    * ``unhealthy`` if the token is expired/missing/malformed/insecure or
+      the 5-minute error rate exceeds 20%.
+    * ``degraded`` if the 5-minute error rate is between 5% and 20%.
+    * ``healthy`` otherwise.
+    """
+    unhealthy_token_states = {
+        TokenState.MISSING,
+        TokenState.MALFORMED,
+        TokenState.INSECURE_PERMS,
+    }
+    if token_state in unhealthy_token_states:
+        return "unhealthy"
+    if error_rate > UNHEALTHY_ERROR_RATE_THRESHOLD:
+        return "unhealthy"
+    if error_rate > DEGRADED_ERROR_RATE_THRESHOLD:
+        return "degraded"
+    return "healthy"
 
 
 def _rate_limit_budget() -> int:

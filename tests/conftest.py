@@ -103,3 +103,7 @@ def _no_real_creds(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SCHWAB_APP_KEY", "test-key")
     monkeypatch.setenv("SCHWAB_APP_SECRET", "test-secret")
     monkeypatch.setenv("SCHWAB_CALLBACK_URL", "https://127.0.0.1:8182")
+    # Pin the rate-limit budget so tests stay deterministic regardless of
+    # whatever a developer has in their local .env (uv automatically loads
+    # .env when invoking uv run).  Production default is 120/min.
+    monkeypatch.delenv("SCHWAB_RATE_LIMIT_PER_MIN", raising=False)

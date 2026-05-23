@@ -265,3 +265,117 @@ async def test_health_check_invalid_xdg_falls_through() -> None:
     # We don't set up a token; default state is missing -> handled.
     out = await server.health_check()
     assert out["token_state"] == "missing"
+
+
+# ---------------------------------------------------------------------------
+# Sprint v0.3 — health_check state machine + last_errors PII gate (candidate E)
+# ---------------------------------------------------------------------------
+
+
+def _seed_valid_token(state_root: Path) -> None:
+    pdir = state_root / "schwab-marketdata-mcp"
+    pdir.mkdir(parents=True, exist_ok=True)
+    os.chmod(pdir, 0o700)
+    tok = pdir / "token.json"
+    tok.write_text('{"creation_timestamp": 1700000000}')
+    os.chmod(tok, 0o600)
+
+
+def _seed_usage_lines(state_root: Path, ok_count: int, err_count: int) -> None:
+    import json as _json
+    from datetime import UTC as _UTC
+    from datetime import datetime as _datetime
+
+    pdir = state_root / "schwab-marketdata-mcp"
+    pdir.mkdir(parents=True, exist_ok=True)
+    os.chmod(pdir, 0o700)
+    p = pdir / "usage.jsonl"
+    now = _datetime.now(tz=_UTC).isoformat(timespec="milliseconds")
+    with p.open("a", encoding="utf-8") as fh:
+        for _ in range(ok_count):
+            fh.write(
+                _json.dumps({"ts": now, "tool": "get_quote", "status": "ok", "error_class": None, "latency_ms": 1})
+                + "\n"
+            )
+        for i in range(err_count):
+            fh.write(
+                _json.dumps({"ts": now, "tool": "get_quote", "status": "err", "error_class": f"E{i}", "latency_ms": 1})
+                + "\n"
+            )
+    os.chmod(p, 0o600)
+
+
+async def test_health_check_overall_status_healthy(fake_client: None) -> None:
+    state_root = Path(os.environ["XDG_STATE_HOME"])
+    _seed_valid_token(state_root)
+    _seed_usage_lines(state_root, ok_count=20, err_count=0)
+    out = await server.health_check()
+    assert out["overall_status"] == "healthy"
+    assert out["error_rate_5min"] == 0.0
+    assert out["last_errors"] == []
+
+
+async def test_health_check_overall_status_degraded(fake_client: None) -> None:
+    """error_rate ~10% (1/10) → degraded."""
+    state_root = Path(os.environ["XDG_STATE_HOME"])
+    _seed_valid_token(state_root)
+    _seed_usage_lines(state_root, ok_count=9, err_count=1)
+    out = await server.health_check()
+    assert out["overall_status"] == "degraded"
+    assert 0.05 < out["error_rate_5min"] <= 0.20
+    assert out["error_count_5min"] == 1
+
+
+async def test_health_check_overall_status_unhealthy_error_rate(fake_client: None) -> None:
+    """error_rate ~50% → unhealthy."""
+    state_root = Path(os.environ["XDG_STATE_HOME"])
+    _seed_valid_token(state_root)
+    _seed_usage_lines(state_root, ok_count=2, err_count=3)
+    out = await server.health_check()
+    assert out["overall_status"] == "unhealthy"
+    assert out["error_rate_5min"] > 0.20
+
+
+async def test_health_check_overall_status_unhealthy_token_missing(fake_client: None) -> None:
+    """Token missing → unhealthy regardless of error rate."""
+    state_root = Path(os.environ["XDG_STATE_HOME"])
+    # Don't seed a token.  Seed clean ok-only usage so error_rate is 0.
+    _seed_usage_lines(state_root, ok_count=5, err_count=0)
+    out = await server.health_check()
+    assert out["token_state"] == "missing"
+    assert out["overall_status"] == "unhealthy"
+
+
+async def test_health_check_last_errors_no_pii_leak(fake_client: None) -> None:
+    """``last_errors`` field must never include error message / Bearer token / PII."""
+    import json as _json
+    from datetime import UTC as _UTC
+    from datetime import datetime as _datetime
+
+    state_root = Path(os.environ["XDG_STATE_HOME"])
+    _seed_valid_token(state_root)
+    pdir = state_root / "schwab-marketdata-mcp"
+    pdir.mkdir(parents=True, exist_ok=True)
+    p = pdir / "usage.jsonl"
+    now = _datetime.now(tz=_UTC).isoformat(timespec="milliseconds")
+    leaky_row = {
+        "ts": now,
+        "tool": "get_quote",
+        "status": "err",
+        "error_class": "SchwabAuthError",
+        "latency_ms": 1,
+        "message": "401 Unauthorized: Bearer abc.def.ghi from acct=1234567890",
+        "access_token": "Bearer abc.def.ghi",
+    }
+    with p.open("a", encoding="utf-8") as fh:
+        fh.write(_json.dumps(leaky_row) + "\n")
+    os.chmod(p, 0o600)
+
+    out = await server.health_check()
+    assert out["overall_status"] == "unhealthy"
+    assert len(out["last_errors"]) == 1
+    last = out["last_errors"][0]
+    assert set(last.keys()) == {"ts", "tool", "error_class"}
+    blob = _json.dumps(out)
+    for needle in ("Bearer", "abc.def.ghi", "1234567890", "401 Unauthorized", "access_token"):
+        assert needle not in blob, f"PII/secret leaked into health_check: {needle!r}"
