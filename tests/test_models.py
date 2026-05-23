@@ -285,10 +285,10 @@ def test_validate_tool_input_passes_through_schwab_validation_error() -> None:
     assert ei.value.field == "symbols"
 
 
-def test_supported_tool_names_count_12() -> None:
+def test_supported_tool_names_count_13() -> None:
     names = supported_tool_names()
-    assert len(names) == 12
-    assert names[-2:] == ["health_check", "get_server_info"]
+    assert len(names) == 13
+    assert names[-3:] == ["health_check", "get_server_info", "get_streaming_snapshot"]
 
 
 def test_get_option_expiration_chain_input() -> None:
