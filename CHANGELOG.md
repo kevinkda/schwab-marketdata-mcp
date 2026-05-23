@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-05-23
+
 ### Added
 
 - **Windows native support (Tier A best-effort, experimental)**: new
@@ -56,7 +58,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - schwab-py upgrade checklist.
   - `docs/WINDOWS_PORTING.md` — Tier-A/B/C effort estimates + ready-to-paste
     `_platform.py` shim for friend-implemented Windows-native port.
-- Bilingual READMEs (English master + Chinese mirror via README_zh.md, language
+- Bilingual READMEs (English primary + Chinese mirror via README_zh.md, language
   switcher header).
 - `chore(license)`: switched from Unlicense to MIT for upstream-deps
   consistency (Copyright 2026 Tang Keyin).
@@ -88,4 +90,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - mcp Python SDK >=1.6,<2.0; schwab-py >=1.5.1,<1.6;
   httpx >=0.28.1,<0.29; respx >=0.22.0,<0.24.
 
-[Unreleased]: https://github.com/kevinkda/schwab-marketdata-mcp/compare/...HEAD
+[Unreleased]: https://github.com/kevinkda/schwab-marketdata-mcp/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/kevinkda/schwab-marketdata-mcp/releases/tag/v0.1.0
