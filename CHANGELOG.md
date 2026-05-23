@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-05-24
+
+### Fixed
+
+- **`serverInfo.version` now reports the project release tag** (e.g. `0.3.1`)
+  instead of the underlying mcp framework version (`1.27.x`). The mcp
+  Python SDK 1.27.x `FastMCP.__init__` does not accept a `version=` kwarg,
+  so the lowlevel `Server.version` defaulted to `None` and the
+  `initialize` response fell back to `importlib.metadata.version("mcp")`.
+  Fix: directly set `mcp._mcp_server.version = SERVER_VERSION` after
+  FastMCP construction. Adds `test_initialize_reports_release_tag_version`
+  integration test asserting the fix.
+
+### Compatibility
+
+- Test count: 336 → 337 passing on Linux (89.08% coverage; 4 critical
+  modules at 100%).
+
 ## [0.3.0] - 2026-05-23
 
 ### Added
@@ -234,7 +252,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - mcp Python SDK >=1.6,<2.0; schwab-py >=1.5.1,<1.6;
   httpx >=0.28.1,<0.29; respx >=0.22.0,<0.24.
 
-[Unreleased]: https://github.com/kevinkda/schwab-marketdata-mcp/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/kevinkda/schwab-marketdata-mcp/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/kevinkda/schwab-marketdata-mcp/releases/tag/v0.3.1
 [0.3.0]: https://github.com/kevinkda/schwab-marketdata-mcp/releases/tag/v0.3.0
 [0.2.0]: https://github.com/kevinkda/schwab-marketdata-mcp/releases/tag/v0.2.0
 [0.1.1]: https://github.com/kevinkda/schwab-marketdata-mcp/releases/tag/v0.1.1
