@@ -9,6 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Windows native support (Tier A best-effort, experimental)**: new
+  `_platform.py` shim abstracts `fcntl.flock` ↔ `msvcrt.locking`,
+  `os.chmod` (POSIX) ↔ NTFS-ACL no-op, `osascript` / `notify-send` ↔
+  plyer / PowerShell toasts, `XDG_STATE_HOME` ↔ `%LOCALAPPDATA%`.
+  `python -c "import schwab_marketdata_mcp"` no longer crashes with
+  `ModuleNotFoundError: fcntl` on Windows.
+  - `pyproject.toml` now ships an optional `[windows]` extras group
+    (`pip install schwab-marketdata-mcp[windows]`) pinning
+    `plyer>=2.1,<3 ; platform_system == 'Windows'`.
+  - `pytest --strict-markers` registers a new `posix_only` marker that
+    `tests/conftest.py` auto-skips on Windows; existing tests that
+    assert exact POSIX bits (`stat.S_IMODE == 0o600`, `os.chmod 0o644`)
+    are tagged so the suite stays green on either platform.
+  - `tests/test_platform.py` exercises both branches of every shim
+    helper (state_root, secure_chmod, secure_fchmod, is_secure_perms,
+    file_mode, restrictive_umask, exclusive_file_lock, notify_desktop)
+    via `monkeypatch.setattr(_platform, "IS_WINDOWS", True)` so the
+    Windows branches reach 100% coverage on a Linux / macOS CI runner.
+  - `docs/cron.example` gains a Windows Task Scheduler section with a
+    ready-to-run `Register-ScheduledTask` PowerShell snippet (Sunday
+    20:00 + Wednesday 21:00 + 4h fallback).
+  - `scripts/notifier-self-test.ps1` is the PowerShell analogue of
+    `scripts/notifier-self-test.sh` (toast via `Windows.UI.Notifications`
+    - Desktop marker fallback).
+  - **Known limitations** (still requires Tier B): NTFS ACLs are not
+    inspected — we trust the default `%LOCALAPPDATA%` ACL; SMB-mapped
+    state dirs are unsupported (`msvcrt.locking` is unreliable on SMB);
+    `scripts/local-ci.sh` is still bash-only (use Git Bash or WSL).
+
 - Initial implementation of Schwab Market Data Production MCP server
   (12 tools: 10 business + 2 meta).
 - Stdio JSON-RPC protocol with safe-print, RotatingFileHandler, Bearer redact

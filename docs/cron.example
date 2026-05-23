@@ -98,6 +98,62 @@ probe exits with code 2 (critical).
 
 ---
 
+## Windows native (Task Scheduler) — experimental
+
+> **Status**: experimental (Tier A best-effort).  See
+> [`docs/WINDOWS_PORTING.md`](WINDOWS_PORTING.md) for caveats.
+
+Save the following as `register-schwab-health.ps1` somewhere convenient and
+run **once** in an elevated PowerShell:
+
+```powershell
+$Repo   = "$env:USERPROFILE\code\kevinkda\schwab-marketdata-mcp"
+$UvBin  = "$env:USERPROFILE\.local\bin\uv.exe"
+$LogDir = "$env:LOCALAPPDATA\schwab-marketdata-mcp\logs"
+New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+
+$Action = New-ScheduledTaskAction `
+    -Execute $UvBin `
+    -Argument "--directory `"$Repo`" run python -m schwab_marketdata_mcp.health" `
+    -WorkingDirectory $Repo
+
+# Sunday 20:00 + Wednesday 21:00 + every 4 hours fallback.
+$Triggers = @(
+    (New-ScheduledTaskTrigger -Weekly -DaysOfWeek Sunday    -At 8:00PM),
+    (New-ScheduledTaskTrigger -Weekly -DaysOfWeek Wednesday -At 9:00PM),
+    (New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Hours 4))
+)
+
+$Principal = New-ScheduledTaskPrincipal -UserId "$env:USERNAME" -LogonType Interactive
+$Settings  = New-ScheduledTaskSettingsSet `
+    -StartWhenAvailable `
+    -DontStopOnIdleEnd `
+    -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
+
+Register-ScheduledTask `
+    -TaskName "SchwabMcpHealth" `
+    -Action $Action `
+    -Trigger $Triggers `
+    -Principal $Principal `
+    -Settings $Settings `
+    -Description "Schwab Market Data MCP token-health probe (read-only)."
+```
+
+To remove later:
+
+```powershell
+Unregister-ScheduledTask -TaskName "SchwabMcpHealth" -Confirm:$false
+```
+
+> `StartWhenAvailable` is the analogue of macOS launchd's `RunAtLoad` /
+> the 4 h fallback - Windows Task Scheduler will run a missed weekly trigger
+> as soon as the laptop wakes, but **only if** `StartWhenAvailable=$true`.
+
+After registering, run `pwsh scripts/notifier-self-test.ps1` once to confirm
+toasts and the `~/Desktop/SCHWAB_REAUTH_NEEDED.md` fallback both work.
+
+---
+
 ## Why this schedule?
 
 - **Sunday 20:00 / Wednesday 21:00** — the typical "I am at the desk"
