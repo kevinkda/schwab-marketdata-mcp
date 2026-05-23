@@ -19,6 +19,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   LLM agents and the SLO checker can plot an hourly time-series without
   parsing usage.jsonl.  Sparse output: hours with zero events are
   omitted; chronological order; ISO-8601 UTC `hour_utc` keys.
+- `metrics.recent_errors_window(window_minutes=5, last_n=5)`: sliding-
+  window error-rate computation backed by an O(1)-memory tail-read of
+  `usage.jsonl` (caps at 2 MB regardless of file size).  Returns
+  `{window_minutes, total_calls, error_count, error_rate, last_errors}`
+  where `last_errors` deliberately contains **only** `ts` / `tool` /
+  `error_class` — no exception messages, Bearer tokens, or PII.
+- `health_check` MCP tool now includes:
+  - `overall_status` field — `healthy` / `degraded` (error_rate > 5 %)
+    / `unhealthy` (error_rate > 20 % or token missing/malformed/insecure)
+  - `error_rate_5min`, `error_count_5min`, `total_calls_5min`,
+    `last_errors` (5 most recent — metadata-only)
+  - Documented thresholds in `DEGRADED_ERROR_RATE_THRESHOLD` /
+    `UNHEALTHY_ERROR_RATE_THRESHOLD` constants.
+
+### Changed
+
+- `tests/conftest.py`: the autouse `_no_real_creds` fixture now also
+  unsets `SCHWAB_RATE_LIMIT_PER_MIN` so a developer's `.env` (auto-
+  loaded by `uv run`) can no longer pollute `health_check`'s
+  rate-limit reading inside tests.
 
 ## [0.2.0] - 2026-05-23
 

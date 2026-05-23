@@ -247,6 +247,131 @@ def recent_error_count_24h(path: Path | None = None) -> int:
     return int(aggregate_stats(window_days=1, path=path)["by_status"].get("err", 0))
 
 
+# ---------------------------------------------------------------------------
+# Sliding-window error rate (Sprint v0.3 task #3 — observability candidate E)
+# ---------------------------------------------------------------------------
+
+# Read at most this many bytes from the tail of usage.jsonl when computing
+# the sliding window.  At ~150 bytes/row this caps memory at <2 MB while
+# keeping >12 000 of the most recent rows in scope — far more than a 5 min
+# window will ever produce in practice.
+_TAIL_READ_BYTES: Final[int] = 2 * 1024 * 1024
+
+
+def _tail_lines(target: Path, *, max_bytes: int = _TAIL_READ_BYTES) -> list[str]:
+    """Return the last *complete* lines from ``target`` without reading the whole file.
+
+    Reads at most ``max_bytes`` from the end of the file.  If the file is
+    smaller, the entire content is returned.  The first (potentially
+    truncated) line in the buffer is dropped to guarantee every returned
+    line is well-formed.
+    """
+    try:
+        size = target.stat().st_size
+    except OSError:
+        return []
+    if size == 0:
+        return []
+    read_bytes = min(size, max_bytes)
+    try:
+        with target.open("rb") as fh:
+            fh.seek(size - read_bytes)
+            data = fh.read(read_bytes)
+    except OSError:
+        return []
+    text = data.decode("utf-8", errors="replace")
+    lines = text.splitlines()
+    if read_bytes < size and lines:
+        # First line may be truncated by the seek offset; drop it.
+        lines = lines[1:]
+    return lines
+
+
+def recent_errors_window(
+    *,
+    window_minutes: int = 5,
+    last_n: int = 5,
+    path: Path | None = None,
+) -> dict[str, Any]:
+    """Sliding-window error stats from ``usage.jsonl``.
+
+    Returns::
+
+        {
+            "window_minutes": 5,
+            "total_calls": 42,
+            "error_count": 1,
+            "error_rate": 0.024,        # 0..1, 0.0 when total_calls == 0
+            "last_errors": [
+                {"ts": "...", "tool": "get_quote",
+                 "error_class": "SchwabRateLimitError"},
+                ...
+            ]
+        }
+
+    ``last_errors`` deliberately contains **only** ``ts``, ``tool`` and
+    ``error_class`` — we never surface the original exception message
+    here, because the message could embed PII (account numbers,
+    symbols) or transiently leaked secrets (Bearer tokens in stack
+    traces).  The MCP tool layer that consumes this dict is itself
+    consumed by LLM agents, so the leak surface is amplified and
+    must be guarded at the source.
+    """
+    if window_minutes < 1:
+        raise ValueError("window_minutes must be >= 1")
+    if last_n < 0:
+        raise ValueError("last_n must be >= 0")
+    target = path or usage_path()
+    out: dict[str, Any] = {
+        "window_minutes": window_minutes,
+        "total_calls": 0,
+        "error_count": 0,
+        "error_rate": 0.0,
+        "last_errors": [],
+    }
+    if not target.exists():
+        return out
+    cutoff = datetime.now(tz=UTC) - timedelta(minutes=window_minutes)
+    total = 0
+    errors = 0
+    last_errors: list[dict[str, Any]] = []
+    for raw in _tail_lines(target):
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+            ts = datetime.fromisoformat(str(obj["ts"]).replace("Z", "+00:00"))
+        except (ValueError, KeyError, TypeError):
+            continue
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=UTC)
+        if ts < cutoff:
+            continue
+        total += 1
+        if str(obj.get("status")) == "err":
+            errors += 1
+            # Only surface metadata fields — never the underlying error
+            # message, even if a future writer adds one to usage.jsonl.
+            last_errors.append(
+                {
+                    "ts": str(obj.get("ts", "")),
+                    "tool": str(obj.get("tool", "")),
+                    "error_class": str(obj.get("error_class") or ""),
+                }
+            )
+    if last_errors and last_n > 0:
+        last_errors = last_errors[-last_n:]
+    elif last_n == 0:
+        last_errors = []
+    rate = (errors / total) if total > 0 else 0.0
+    out["total_calls"] = total
+    out["error_count"] = errors
+    out["error_rate"] = rate
+    out["last_errors"] = last_errors
+    return out
+
+
 def cli_main(argv: list[str] | None = None) -> int:
     """``python -m schwab_marketdata_mcp.stats`` entry point."""
     import argparse
@@ -283,6 +408,7 @@ __all__ = [
     "aggregate_stats",
     "cli_main",
     "recent_error_count_24h",
+    "recent_errors_window",
     "record",
     "time_tool",
     "truncate_to_window",
