@@ -97,7 +97,7 @@ def test_exception_str_does_not_leak_token() -> None:
 
 
 def test_exceptions_reject_wrong_types() -> None:
-    """Sanity — ``message`` field whitelist."""
+    """Sanity — ``message`` field allow-list."""
     with pytest.raises(TypeError):
         SchwabAuthError(reason=123, hint="x")  # type: ignore[arg-type]
     with pytest.raises(TypeError):
