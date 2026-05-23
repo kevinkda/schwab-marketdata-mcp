@@ -39,12 +39,12 @@ hardening, so `os.environ["SCHWAB_APP_KEY"]` is populated from a `.env`
 file in the **process working directory** even when the host did not
 inject it.  This means:
 
-* Hosts that **do** support an `envFile` directive (Cursor, VS Code) get
+- Hosts that **do** support an `envFile` directive (Cursor, VS Code) get
   the cleanest setup — credentials live in the file pointed to by
   `envFile`, the host keeps `~/.cursor/mcp.json` itself credential-free,
   and the server-side dotenv loader sees host-provided values first
   because `bootstrap_dotenv` calls `load_dotenv(override=False)`.
-* Hosts that **do not** support `envFile` (Claude Desktop today, plain
+- Hosts that **do not** support `envFile` (Claude Desktop today, plain
   `uv run schwab-marketdata-mcp` from a shell, ad-hoc scripts) still
   work as long as the server's cwd is the package checkout that
   contains `.env`.  The `--directory <repo>` flag in the `args` array
@@ -118,30 +118,30 @@ then point `command` at the absolute path of that script and drop
 
 ### Mandatory adjustments
 
-* `command` — replace `${HOME}/.local/bin/uv` with the **absolute path**
+- `command` — replace `${HOME}/.local/bin/uv` with the **absolute path**
   printed by `which uv`.  mise / pyenv / brew users will have a
   different prefix, e.g.
   `/Users/you/.local/share/mise/installs/python/3.12.x/bin/uv`.
-* `args[1]` and `envFile` — replace
+- `args[1]` and `envFile` — replace
   `${HOME}/code/kevinkda/schwab-marketdata-mcp` with the absolute
   path to your local checkout.  These two paths **must** match.
-* `${HOME}` may not be expanded by every Cursor version; if the server
+- `${HOME}` may not be expanded by every Cursor version; if the server
   fails to start, substitute the literal absolute path.
-* Confirm `.env` exists at the path referenced by `envFile` and is
+- Confirm `.env` exists at the path referenced by `envFile` and is
   mode 600 (`chmod 600 .env`).  `.gitignore` already excludes it.
 
 ### Hard-no's
 
-* **Do NOT** copy `SCHWAB_APP_KEY` / `SCHWAB_APP_SECRET` /
+- **Do NOT** copy `SCHWAB_APP_KEY` / `SCHWAB_APP_SECRET` /
   `SCHWAB_CALLBACK_URL` into the `env` block of `mcp.json`.  Keep them
   in `.env` only — that is the file `.gitignore` and pre-commit hooks
   protect.  `mcp.json` is sometimes synced via dotfiles repos / IDE
   sync, which is a credential-leak vector.
-* **Do NOT** add `SCHWAB_TOKEN_PATH` to `env`.  That env var is
+- **Do NOT** add `SCHWAB_TOKEN_PATH` to `env`.  That env var is
   intentionally **not consulted** by the server (mcp.json is an
   attractive injection vector).  Use the `--config-dir` CLI flag
   instead.
-* **Do NOT** register `schwab_marketdata_mcp.auth` as an MCP server.
+- **Do NOT** register `schwab_marketdata_mcp.auth` as an MCP server.
   The auth CLI uses stdout to exchange the OAuth code with the browser;
   registering it would corrupt JSON-RPC.
 
@@ -183,7 +183,7 @@ schwab-marketdata-mcp/<our-version> python/<py-ver> schwab-py/<lib-ver>
 Both skills live in
 `/opt/workspace/code/kevinkda/schwab-marketdata-skill/`:
 
-```
+```text
 schwab-marketdata-skill/
 ├── schwab-marketdata-ops/SKILL.md
 └── schwab-marketdata-workflows/SKILL.md
@@ -224,18 +224,19 @@ bash scripts/notifier-self-test.sh
 ```
 
 You should see:
-* macOS: a notification "Schwab MCP self-test — if you see this,
+
+- macOS: a notification "Schwab MCP self-test — if you see this,
   notifications work." in the Notification Center.
-* Linux: a critical `notify-send` notification on your DE.
-* In all cases: a marker file
+- Linux: a critical `notify-send` notification on your DE.
+- In all cases: a marker file
   `~/Desktop/SCHWAB_REAUTH_NEEDED.md` is written (you can delete it
   afterwards).
 
 If the notification did not fire:
 
-* macOS:  System Settings → Privacy & Security → Automation, allow
+- macOS:  System Settings → Privacy & Security → Automation, allow
   "Terminal" / "iTerm" / your shell to control "System Events".
-* Linux:  Ensure `libnotify-bin` is installed and the user has a
+- Linux:  Ensure `libnotify-bin` is installed and the user has a
   running session bus (D-Bus).
 
 ---
@@ -294,7 +295,7 @@ Running `uv run python -m schwab_marketdata_mcp.auth login_flow`, after
 clicking **Allow** on the Schwab login page (and clicking **Proceed**
 through the local self-signed-cert warning), the CLI crashes with:
 
-```
+```text
 authlib.oauth2.rfc6749.errors.MismatchingStateException:
 mismatching_state: CSRF Warning! State not equal in request and response.
 ```
@@ -315,10 +316,10 @@ https://github.com/authlib/authlib/blob/v1.7.2/authlib/oauth2/rfc6749/parameters
 Any of the following will desynchronise it:
 
 1. **Stale browser tab from a previous, aborted run.**  After
-   `Ctrl-C`, the *old* tab is still parked at `https://api.schwabapi.com/
+   `Ctrl-C`, the _old_ tab is still parked at `https://api.schwabapi.com/
    v1/oauth/authorize?...&state=<OLD>`.  When you start a fresh
    `login_flow`, two tabs are alive simultaneously; clicking **Allow**
-   in the *old* tab POSTs `state=<OLD>` to the brand-new local
+   in the _old_ tab POSTs `state=<OLD>` to the brand-new local
    callback server, which is expecting `state=<NEW>`.  **This is the
    #1 cause.**
 2. **Schwab redirect-uri pinning rewrites `state`.**  If the
@@ -344,19 +345,19 @@ Any of the following will desynchronise it:
 
 Three hypotheses we explicitly **ruled out** while debugging:
 
-* **`multiprocess` start-method races.**  schwab-py forks a child
+- **`multiprocess` start-method races.**  schwab-py forks a child
   process to run Flask, but `state` lives entirely in the **parent**
   process (see `schwab/auth.py:580-601` — `AuthContext` is constructed
   before `multiprocess.Process` starts; the child only enqueues the
   raw URL it received).  Linux dev-desks default to `fork`, so even
   if state were process-local, it'd be copy-on-write to the child.
   **Not the bug.**
-* **`authlib` `self.state` vs explicit `state=` kwarg.**  schwab-py's
-  `client_from_received_url` constructs a *fresh* `OAuth2Client` and
+- **`authlib` `self.state` vs explicit `state=` kwarg.**  schwab-py's
+  `client_from_received_url` constructs a _fresh_ `OAuth2Client` and
   passes `state=auth_context.state` explicitly to `fetch_token`.
   `authlib/oauth2/client.py:212` does `state = state or self.state`,
   so the explicit kwarg wins.  **Not the bug.**
-* **`callback_url` port mismatch with Developer Portal.**  Pre-flight
+- **`callback_url` port mismatch with Developer Portal.**  Pre-flight
   now rejects this up front.  **Already fixed.**
 
 ### Why `login_flow` is fundamentally fragile
@@ -364,7 +365,7 @@ Three hypotheses we explicitly **ruled out** while debugging:
 Every cause above is **outside the Python process**: stale browser
 tabs, browser extensions, HSTS, Schwab-side `redirect_uri`
 normalisation.  schwab-py cannot defend against any of them — the
-local Flask server has no way to verify *which* tab originated the
+local Flask server has no way to verify _which_ tab originated the
 callback.  This is why we now **recommend `manual_flow` as the
 default**: you paste the URL **you can see right now in the address
 bar**, eliminating every cross-tab and browser-rewrite vector.

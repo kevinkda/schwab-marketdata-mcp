@@ -58,9 +58,11 @@ relative to repo root.
 | 18 | `src/schwab_marketdata_mcp/__init__.py` | 17 | Docstring claims POSIX only | Self-documenting | LOW — update at end |
 
 **Not present (good news)**:
+
 - No `os.fork`, `os.geteuid`, `os.setuid`, `signal.SIGUSR*`, `pwd`, `grp` calls.
 - No raw `/` path concatenation that would break on Windows (everything goes through `pathlib`).
 - No `os.dup` / `os.dup2` calls in actual code (only mentioned in a comment).
+<!-- markdownlint-disable-next-line MD013 -->
 - `subprocess.run` always uses `argv` lists (never `shell=True` with concatenation), so no shell-injection-style portability issues.
 
 ---
@@ -351,6 +353,7 @@ Make these mechanical edits:
 
 1. **Remove the top-level `import fcntl`** (line 13).  This is the import that
    crashes Windows.  Replace it with:
+
    ```python
    from . import _platform
    ```
@@ -384,6 +387,7 @@ Make these mechanical edits:
        ```
 
 4. **Replace bare `os.chmod` calls** (lines 277, 281, 286) with
+
    `_platform.secure_chmod`:
 
    ```python
@@ -445,6 +449,7 @@ Make these mechanical edits:
 
 **Tests affected** (will need `skipif(IS_WINDOWS)` markers OR rewrite to use
 `is_secure_perms`):
+
 - `tests/test_security.py` lines 224, 233, 242, 250, 259, 270, 273, 296, 305,
   311, 313, 391, 443 (any `stat.S_IMODE(...) == 0o600` or `os.chmod(..., 0o600)`).
 - `tests/test_metrics.py` line 23.
@@ -944,19 +949,23 @@ matrix testing.
 ### Step-by-step
 
 1. **Branch off `main`**:
+
    ```powershell
    git switch -c windows-native-tier-a
    ```
 
 2. **Bootstrap dev environment** (in regular PowerShell, not elevated):
+
    ```powershell
    uv sync --extra dev
    ```
 
 3. **Run the existing test suite to confirm a clean baseline**:
+
    ```powershell
    uv run pytest -x
    ```
+
    Expect ~6-10 failures, all on perms / fcntl. **Save this output** — it
    doubles as your "before" snapshot.
 
@@ -965,12 +974,14 @@ matrix testing.
    from Section 5.
 
 5. **Implement Step 3.2** (refactor `security.py`).  After this step:
+
    ```powershell
    uv run python -c "import schwab_marketdata_mcp"   # must NOT raise
    uv run python -c "from schwab_marketdata_mcp.security import token_file_lock; from pathlib import Path; import tempfile, os; d = Path(tempfile.mkdtemp()); p = d / 'tok.json'; p.write_text('{}'); ctx = token_file_lock(p); ctx.__enter__(); ctx.__exit__(None, None, None); print('lock OK')"
    ```
 
 6. **Implement Steps 3.3-3.6** in order.  After each file edit, run:
+
    ```powershell
    uv run ruff check src tests
    uv run ruff format --check src tests
@@ -982,13 +993,16 @@ matrix testing.
    need to enumerate.
 
 8. **Final gate** on Windows:
+
    ```powershell
    uv run pytest --cov
    ```
+
    Acceptance: 0 failed, 0 errored.  Some skipped (the `posix_only` ones)
    is expected.
 
 9. **Smoke-test the actual server bootstrap** (no real Schwab creds needed):
+
    ```powershell
    $env:SCHWAB_APP_KEY    = "test-key-not-real"
    $env:SCHWAB_APP_SECRET = "test-secret-not-real"  # pragma: allowlist secret
@@ -999,9 +1013,11 @@ matrix testing.
 
 10. **Smoke-test on a real macOS / Linux box** before submitting (the user's
     main platform).  This confirms no regressions:
+
     ```bash
     bash scripts/local-ci.sh
     ```
+
     All gates must pass.  If any gate that was green before is red now,
     **stop and report back** — do not paper over it.
 
@@ -1059,6 +1075,7 @@ git format-patch main..HEAD --stdout > windows-native-tier-a.patch
 
 ## 9. Summary checklist (for Tang Keyin's review)
 
+<!-- markdownlint-disable-next-line MD013 -->
 - [ ] `_platform.py` created with `IS_WINDOWS`, `exclusive_file_lock`, `secure_chmod`, `is_secure_perms`, `state_root`, `notify_desktop`, `restrictive_umask`.
 - [ ] `security.py` no longer imports `fcntl` at module top.
 - [ ] `security.py:token_file_lock` uses `_platform.exclusive_file_lock`.

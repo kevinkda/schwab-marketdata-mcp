@@ -24,7 +24,7 @@
 
 ## 2. Trust boundaries
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────────┐
 │  User (local trusted)                                               │
 │   └── Cursor / Claude (local trusted)                               │
@@ -88,11 +88,13 @@ See plan §6.3 for the full matrix.  Quick map for this repo:
 The single most fragile dependency is **schwab-py** (Bus factor = 1).  Before
 bumping `schwab-py` past `1.5.x`, a reviewer **must** verify:
 
+<!-- markdownlint-disable MD013 -->
 - [ ] `schwab.client.Client.token_age()` still exists and returns `timedelta`.  Plan §3.2.2 health probe assumes this; fall-back is `token.json` mtime read but that's a degraded mode.
 - [ ] `schwab.client.Client.Movers.Index` / `Quote.Fields` / `Options.*` / `MarketHours.Market` / `Instrument.Projection` enum **names** unchanged.  ``models._assert_enum_alignment`` will throw at import time if any drift; fix the Literal first, then re-run tests.
 - [ ] `schwab.auth.client_from_login_flow(asyncio=True, …)` keyword still accepts ``asyncio``.  If renamed, update `client.py::make_client` and `auth_logic.py`.
 - [ ] No new mandatory parameter on `easy_client` / `client_from_*_flow` — silent default-arg additions can change behavior.
 - [ ] schwab-py changed how it stores `token.json` internal schema?  See **Token field-name drift log** below.
+<!-- markdownlint-enable MD013 -->
 
 ## 7. Token field-name drift log
 
