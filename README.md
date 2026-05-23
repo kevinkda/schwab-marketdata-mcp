@@ -4,7 +4,7 @@
 
 [![Status](https://img.shields.io/badge/status-alpha-orange.svg)](./README.md)
 [![Python](https://img.shields.io/badge/python-%3E%3D3.11-blue.svg)](#requirements)
-[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey.svg)](#requirements)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)](#requirements)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
 
 Production-grade **Model Context Protocol (MCP)** server that exposes the
@@ -127,6 +127,8 @@ Claude Desktop), see [`docs/REGISTER.md`](docs/REGISTER.md).
 
 ### Tooling surface — 12 MCP tools
 
+At-a-glance map of name → endpoint:
+
 | #  | Tool                          | Endpoint                                   |
 | -- | ----------------------------- | ------------------------------------------ |
 | 1  | `get_quote`                   | `GET /{symbol_id}/quotes`                  |
@@ -142,6 +144,147 @@ Claude Desktop), see [`docs/REGISTER.md`](docs/REGISTER.md).
 | 11 | `health_check`                | local — token age + recent error count     |
 | 12 | `get_server_info`             | local — versions + supported tool list     |
 
+Detailed per-tool reference is below.
+
+#### Business tools (10) — Schwab Market Data Production endpoints
+
+##### `get_quote` — single-symbol real-time quote
+
+- **When**: fetch the latest bid / ask / last for one symbol; quick P&L
+  read or one-off decision; not a batch.
+- **Input**: `symbol` (str — stock, ETF, index `$XYZ`, or OSI option),
+  `fields?` (list of field groups, e.g. `["quote", "fundamental"]`).
+- **Returns**:
+  `{<symbol>: {quote: {bidPrice, askPrice, lastPrice, totalVolume, ...},
+  fundamental: {...}, reference: {...}}}`
+- **Example**: `{"symbol": "VOO"}`
+
+##### `get_quotes` — batch quote for ≤ 50 symbols
+
+- **When**: watchlist refresh, portfolio-wide scan, ETF / stock
+  comparison; one HTTP round-trip instead of N.
+- **Input**: `symbols` (list[str], len ≤ 50), `fields?`,
+  `indicative?` (bool — include indicative quotes for indices).
+- **Returns**: `{<sym1>: {quote: {...}, fundamental: {...}}, <sym2>: {...}, ...}`
+- **Example**: `{"symbols": ["VOO", "QQQ", "SPY"]}`
+
+##### `get_price_history` — OHLC candles (minute → month)
+
+- **When**: technical analysis, backtests, charting, computing SMA / RSI
+  / ATR or any windowed indicator.
+- **Input**: `symbol`, `period_type` (`DAY` / `MONTH` / `YEAR` / `YTD`),
+  `period`, `frequency_type` (`MINUTE` / `DAILY` / `WEEKLY` / `MONTHLY`),
+  `frequency`. Pydantic pre-validates the legal cartesian product.
+- **Returns**: `{candles: [{open, high, low, close, volume, datetime}, ...],
+  symbol, empty}`
+- **Example**:
+  `{"symbol": "VOO", "period_type": "DAY", "period": "FIVE_DAYS",
+  "frequency_type": "MINUTE", "frequency": "EVERY_FIVE_MINUTES"}`
+
+##### `get_option_chain` — option chain snapshot with Greeks
+
+- **When**: option research, IV-rank analysis, covered-call /
+  cash-secured-put strike selection, vertical-spread modeling.
+- **Input**: `symbol`, plus a dozen optional filters —
+  `contract_type?` (`CALL` / `PUT` / `ALL`), `strike_count?`,
+  `from_date?`, `to_date?`, `strategy?`, `range?`, `volatility?`,
+  `interest_rate?`, `days_to_expiration?` …
+- **Returns**:
+  `{status, callExpDateMap: {...}, putExpDateMap: {...},
+  underlying: {...}, numberOfContracts}`
+- **Example**: `{"symbol": "VOO", "strike_count": 3, "contract_type": "ALL"}`
+
+##### `get_option_expiration_chain` — list of available expirations
+
+- **When**: pre-flight before `get_option_chain`; check whether weekly /
+  monthly / LEAPS expiries exist for an underlying.
+- **Input**: `symbol`.
+- **Returns**:
+  `{expirationList: [{expirationDate, daysToExpiration, expirationType,
+  settlementType}, ...]}`
+- **Example**: `{"symbol": "VOO"}`
+
+##### `get_market_hours` — multi-market session hours
+
+- **When**: pre-market / after-hours dashboards; decide whether a market
+  is open before kicking off a scan; cross-market view.
+- **Input**: `markets` (list[str] — any of `EQUITY` / `OPTION` / `BOND` /
+  `FUTURE` / `FOREX`), `date?` (`YYYY-MM-DD`, defaults to today).
+- **Returns**:
+  `{<market>: {<product>: {date, marketType, isOpen, sessionHours: {...}}}}`
+- **Example**: `{"markets": ["EQUITY", "OPTION"]}`
+
+##### `get_market_hour_single` — single-market session hours
+
+- **When**: same intent as `get_market_hours` but only one market —
+  smaller payload, path-param flavor.
+- **Input**: `market_id` (`EQUITY` / `OPTION` / `BOND` / `FUTURE` /
+  `FOREX`), `date?`.
+- **Returns**: same shape as `get_market_hours`, scoped to a single market.
+- **Example**: `{"market_id": "EQUITY"}`
+
+##### `get_movers` — top movers for an index
+
+- **When**: intraday / end-of-day market-tone read; spot unusual movers
+  in `$SPX` / `$DJI` / `$COMPX` / NYSE / NASDAQ.
+- **Input**: `index` (`$SPX` / `$DJI` / `$COMPX` / `NYSE` / `NASDAQ` /
+  `OTCBB` / `INDEX_ALL` / `EQUITY_ALL` / `OPTION_ALL` / `OPTION_PUT` /
+  `OPTION_CALL`), `sort?`, `frequency?`.
+- **Returns**:
+  `{screeners: [{symbol, description, lastPrice, netChange,
+  netPercentChange, volume, ...}, ...]}`
+- **Example**: `{"index": "$SPX"}`
+
+##### `search_instruments` — instrument search / fundamentals
+
+- **When**: resolve user-typed strings (`"AAPL"`, `"Apple"`) to canonical
+  instruments; bulk-validate tickers; pull `fundamental` block (PE,
+  market cap, dividend yield, …).
+- **Input**: `symbols` (list[str]), `projection`
+  (`SYMBOL_SEARCH` / `SYMBOL_REGEX` / `DESC_SEARCH` / `DESC_REGEX` /
+  `SEARCH` / `FUNDAMENTAL`).
+- **Returns**:
+  `{instruments: [{symbol, description, exchange, assetType,
+  fundamental?: {...}}, ...]}`
+- **Example**: `{"symbols": ["VOO"], "projection": "FUNDAMENTAL"}`
+
+##### `get_instrument_by_cusip` — reverse lookup by CUSIP
+
+- **When**: a brokerage statement / SEC filing gave you a 9-character
+  CUSIP and you need the matching ticker / description.
+- **Input**: `cusip` (str, 9 chars, must match `^[A-Z0-9]{9}$`).
+- **Returns**: a single instrument dict
+  `{symbol, description, exchange, assetType, ...}`.
+- **Example**: `{"cusip": "922908363"}` (VOO)
+
+#### Meta tools (2) — local, offline-safe, no Schwab API call
+
+##### `health_check` — token + rate-limit + recent-error self-check
+
+- **When**: first call after MCP startup; before deciding "do we need to
+  re-auth"; periodic cron / launchd probe (every 4 h is plenty).
+- **Input**: none.
+- **Returns**:
+  `{server_version, token_state (VALID | MISSING | INSECURE_PERMS |
+  MALFORMED), token_age_days, token_expires_in_days,
+  last_request_status, rate_limit_remaining_per_min,
+  recent_error_count_24h, platform_supported}`
+- **Example**: `{}`
+
+##### `get_server_info` — version handshake + capability discovery
+
+- **When**: skill activation (validates `compatible_mcp_version`); first
+  time registering on a new client; debugging / bug reports.
+- **Input**: none.
+- **Returns**:
+  `{server_version, mcp_sdk_version, schwab_py_version,
+  supported_tools: [...12 tool names], platform_supported_v1}`
+- **Example**: `{}`
+
+> See [`schwab-marketdata-skill`](https://github.com/kevinkda/schwab-marketdata-skill)
+> for full input / output schemas, edge cases, retry semantics, and
+> end-to-end usage playbooks.
+
 ---
 
 ## Requirements
@@ -150,20 +293,59 @@ Claude Desktop), see [`docs/REGISTER.md`](docs/REGISTER.md).
 | ----------- | ------- | ----- |
 | Python      | `>=3.11` | Type hints rely on PEP 695 syntax. |
 | `uv`        | `>=0.4` | Used for env management and lockfile-pinned installs. |
-| OS          | macOS 11+ / Linux / WSL2 | `fcntl.flock` is required for cross-process token locking. |
+| OS          | macOS 11+ / Linux / WSL2 / Windows 10/11 native (Tier A) | `fcntl.flock` on POSIX, `msvcrt.locking` on Windows. See [`docs/WINDOWS_PORTING.md`](docs/WINDOWS_PORTING.md). |
+| CPU arch    | `x86_64` / `arm64` | Both Intel Macs (Mac Pro 2019, MacBook Pro 2019) and Apple Silicon (M1/M2/M3/M4) are supported with native wheels — no Rosetta 2 needed. Linux `aarch64` (Graviton, Raspberry Pi 5) also works. |
 | Schwab Developer account | — | You must register your own app at <https://developer.schwab.com/dashboard/apps>. |
 
 ### Platform support
 
-|              | macOS 11+ | Linux | WSL2 (Linux subsystem) | Windows native |
-| ------------ | :-------: | :---: | :--------------------: | :------------: |
-| **v1 (now)** |     ✅    |   ✅  |    ✅ (no `/mnt/c`)    |       ❌       |
-| **v2 (TBD)** |     ✅    |   ✅  |          ✅            |   ⏳ (planned: `msvcrt.locking`) |
+|              | macOS 11+ (Intel x86_64) | macOS 11+ (Apple Silicon arm64) | Linux x86_64 | Linux arm64 | WSL2 (Linux subsystem) | Windows 10/11 native |
+| ------------ | :----------------------: | :-----------------------------: | :----------: | :---------: | :--------------------: | :------------------: |
+| **v1 (now)** |            ✅            |                ✅               |      ✅      |      ✅     |    ✅ (no `/mnt/c`)    |   🧪 experimental (Tier A) |
 
-Windows native support requires replacing `fcntl.flock` with
-`msvcrt.locking`; this is on the v2 roadmap. WSL2 works today provided you
-keep the checkout on the Linux filesystem (avoid `/mnt/c`, where `flock`
-behaves unreliably).
+Windows native is **Tier A best-effort** as of this release - token locking
+uses `msvcrt.locking` instead of `fcntl.flock`, and file permissions rely on
+the default NTFS ACL inherited from `%LOCALAPPDATA%` rather than POSIX
+`0o600`.  Install the optional Windows extras for richer toast notifications:
+
+```powershell
+pip install schwab-marketdata-mcp[windows]
+# or with uv:
+uv sync --extra dev --extra windows
+```
+
+See [`docs/WINDOWS_PORTING.md`](docs/WINDOWS_PORTING.md) for the full caveat
+list.  Tier B (production-grade Windows ACL via `pywin32` + a `windows-latest`
+CI runner) is on the roadmap.
+
+All native-extension dependencies (`cryptography`, `pydantic-core`,
+`websockets`, `cffi`, `pyyaml`, `markupsafe`, `msgpack`, `rpds-py`) ship
+both `macosx_*_x86_64` (or `universal2`) and `macosx_*_arm64` wheels on
+PyPI, so `uv sync --extra dev` resolves to native binaries on either
+architecture without invoking the host C/Rust toolchain. The remaining
+runtime deps (`mcp`, `schwab-py`, `httpx`, `httpcore`, `h11`, `anyio`,
+`pydantic`, `httpx-sse`, `joserfc`) are pure-Python (`py3-none-any`) and
+therefore architecture-agnostic.
+
+The server itself uses only architecture-independent abstractions
+(`pathlib.Path`, `os.replace`) plus a thin `_platform` shim that picks the
+right primitive at runtime: `fcntl.flock` / `os.chmod` / `os.umask` on POSIX
+and `msvcrt.locking` / NTFS ACL inheritance on Windows.  Behavior on Intel
+and Apple Silicon Macs is byte-for-byte identical.
+
+Windows native support is Tier A (experimental) — file locking uses
+`msvcrt.locking` and POSIX `0o600` permission bits are best-effort no-ops
+backed by the user's `%LOCALAPPDATA%` NTFS ACL.  Tier B (production-grade
+ACL via `pywin32` + Windows CI matrix) is on the roadmap.  WSL2 still works
+today provided you keep the checkout on the Linux filesystem (avoid
+`/mnt/c`, where `flock` behaves unreliably).
+
+> **CI coverage note** — the `test.yml` matrix currently runs
+> `macos-latest` (= `macos-14`, arm64) and `ubuntu-latest` (x86_64). Intel
+> macOS x86_64 (`macos-13`) is not yet in the matrix; if you depend on
+> Intel-Mac compatibility, run `uv sync --extra dev && uv run pytest --cov`
+> locally on a Mac Pro / Intel MacBook to verify before deployment, or
+> open a PR adding `macos-13` to the runner matrix.
 
 ---
 
@@ -267,7 +449,7 @@ uv run pytest --cov --cov-report=html  # outputs to htmlcov/
 
 ---
 
-## Health probe (cron / launchd)
+## Health probe (cron / launchd / Task Scheduler)
 
 ```bash
 uv run python -m schwab_marketdata_mcp.health
@@ -277,10 +459,13 @@ uv run python -m schwab_marketdata_mcp.health
 
 See [`docs/cron.example`](docs/cron.example) for ready-to-paste **launchd
 plist** (Sunday 20:00 + Wednesday 21:00 + every 4h fallback for laptop lid
-close) and **crontab** snippets.
+close) and **crontab** snippets.  Windows users: the same file ships a
+`Register-ScheduledTask` PowerShell snippet under
+"Windows native (Task Scheduler)".
 
-After installing, run `bash scripts/notifier-self-test.sh` once to confirm
-`osascript` (macOS) or `notify-send` (Linux) actually fires.
+After installing, run `bash scripts/notifier-self-test.sh` (POSIX) or
+`pwsh scripts/notifier-self-test.ps1` (Windows) once to confirm
+`osascript` / `notify-send` / Windows toast actually fires.
 
 ---
 
