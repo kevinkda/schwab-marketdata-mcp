@@ -513,6 +513,9 @@ excerpts.
   walkthrough.
 - [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) — architecture and threat
   model.
+- [`docs/RELEASE.md`](docs/RELEASE.md) — release process for maintainers.
+- [`docs/WINDOWS_PORTING.md`](docs/WINDOWS_PORTING.md) — Windows-native porting
+  effort estimate.
 - [`docs/cron.example`](docs/cron.example) — launchd / crontab templates for
   the health probe.
 

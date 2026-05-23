@@ -96,6 +96,30 @@ bumping `schwab-py` past `1.5.x`, a reviewer **must** verify:
 - [ ] schwab-py changed how it stores `token.json` internal schema?  See **Token field-name drift log** below.
 <!-- markdownlint-enable MD013 -->
 
+## 6.5. mcp Python SDK 1.x → 2.x compatibility checklist
+
+When `mcp` 2.0 is released, the following API surfaces must be verified
+before bumping the upper bound in `pyproject.toml`:
+
+- [ ] `mcp.server.fastmcp.FastMCP(name=...)` constructor signature unchanged
+- [ ] `@mcp.tool(name=..., description=...)` decorator semantics unchanged
+- [ ] `mcp.run(transport="stdio")` entry point still supported (vs new
+  `Server.run()`)
+- [ ] `tools/list` and `tools/call` JSON-RPC method names unchanged
+- [ ] `Context` injection (if introduced in 2.x) does not require `@mcp.tool`
+  refactor
+- [ ] `Resource` / `Prompt` APIs (if added in 2.x) optional, not required
+- [ ] Stdio frame format compatible with 1.x clients (Cursor, Claude Desktop)
+
+Migration steps:
+
+1. Bump `mcp>=2.0,<3.0` in `pyproject.toml`.
+2. `uv sync --upgrade mcp` and run the full test suite.
+3. Verify `tests/test_server_integration.py` stdio harness passes.
+4. Smoke-test in real Cursor / Claude Desktop instance.
+5. Update `CHANGELOG.md` with breaking changes if any.
+6. Skill repo: bump `compatible_mcp_version` in all 4 `SKILL.md` files.
+
 ## 7. Token field-name drift log
 
 Plan §3.2.2 — schwab-py docs explicitly say "do not inspect token.json
