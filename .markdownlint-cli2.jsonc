@@ -1,0 +1,52 @@
+// Project-level markdownlint-cli2 config for schwab-marketdata-mcp
+// Mirrors the configuration in the companion schwab-marketdata-skill repo
+// so both repos validate against the same ruleset.
+{
+  "config": {
+    "default": true,
+
+    // Line length: 120 (markdown industry standard). Tables and code blocks
+    // are exempt because wrapping them would corrupt structure / shell
+    // examples.
+    "MD013": {
+      "line_length": 120,
+      "tables": false,
+      "code_blocks": false,
+      "headings": false
+    },
+
+    // Allow duplicate headings under DIFFERENT parents.
+    "MD024": { "siblings_only": true },
+
+    // Disable "first line must be a heading" — README files start with H1
+    // already, but other docs in this repo may have YAML frontmatter.
+    "MD041": false,
+
+    // Allow common safe inline HTML in markdown.
+    "MD033": {
+      "allowed_elements": ["br", "details", "summary", "kbd", "sub", "sup"]
+    },
+
+    // Allow trailing punctuation in headings (Chinese ？！。：).
+    "MD026": { "punctuation": ".,;:!" },
+
+    // Use dashes for unordered lists everywhere.
+    "MD004": { "style": "dash" },
+
+    // Disable strict table-pipe alignment — long Chinese + English mixed
+    // cells make pipe alignment hurt readability.
+    "MD060": false
+  },
+  "globs": ["**/*.md"],
+  "ignores": [
+    "node_modules/**",
+    ".git/**",
+    ".venv/**",
+    "venv/**",
+    "htmlcov/**",
+    "build/**",
+    "dist/**",
+    "LICENSE",
+    "LICENSE.md"
+  ]
+}
