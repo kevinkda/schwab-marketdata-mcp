@@ -123,6 +123,57 @@ Migration steps:
 5. Update `CHANGELOG.md` with breaking changes if any.
 6. Skill repo: bump `compatible_mcp_version` in all 4 `SKILL.md` files.
 
+### 6.6 schwab-py upgrade drift log
+
+`schwab-py` is the bus-factor-1 dependency (see §6 above).  Whenever the
+pin is bumped (typically via `uv lock --upgrade-package schwab-py`), the
+maintainer **must** record the diff in this section **before** merging the
+upgrade PR.  This complements §6.5 (mcp 2.x checklist) and §7 (token
+field-name drift) so silent breakage in any of the four most-volatile
+schwab-py surfaces is forced into a reviewable artifact.
+
+The fields tracked are the four known-fragile surfaces:
+
+| Field                                | Why it's tracked                                                                                                                         |
+| ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `TokenState` fields verified         | `health.py` and `client.py` read `creation_timestamp` / `expires_at`; renames break the health probe and the in-process token age cache. |
+| `Movers.Index` members count         | `tools.get_movers` enumerates the literal; new members add tool surface but old members vanishing **breaks live agents**.                |
+| `Client.token_age` signature         | Plan §3.2.2 health probe and `health.py` assume `timedelta` return.  A signature change drops us into the degraded `mtime`-fallback.     |
+| Streaming services count             | `tools.get_streaming_snapshot` whitelists service names; renames silently shrink the experimental tool surface.                          |
+
+<!-- markdownlint-disable MD013 -->
+
+| schwab-py version | bumped_at                | TokenState fields verified                                          | Movers.Index members                                                                                          | Client.token_age signature | Streaming services |
+| ----------------- | ------------------------ | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- | -------------------------- | ------------------ |
+| 1.5.1             | 2026-05-23 (v0.1.0 baseline) | creation_timestamp / expires_at present                              | 11 (DJI/COMPX/SPX/NYSE/NASDAQ/OTCBB/INDEX_ALL/EQUITY_ALL/OPTION_ALL/OPTION_PUT/OPTION_CALL)                   | timedelta returned         | 13 services per audit report |
+
+<!-- markdownlint-enable MD013 -->
+
+Verification recipe (run inside the upgraded `uv` env before adding the row):
+
+```bash
+uv run python -c "
+import schwab
+from schwab.client import Client
+print('schwab-py', schwab.__version__)
+print('TokenState fields:', list(Client.TokenState.__annotations__.keys())
+      if hasattr(Client, 'TokenState') else 'absent')
+print('Movers.Index members:',
+      len(Client.Movers.Index.__members__),
+      list(Client.Movers.Index.__members__.keys()))
+print('token_age return annotation:',
+      Client.token_age.__annotations__.get('return'))
+"
+```
+
+If any field diverges from the previous row:
+
+1. **Stop.** Do not merge the upgrade PR.
+2. Open a tracking issue summarizing the diff.
+3. Patch the affected code (Literal types in `models.py`, enum alignment
+   asserts, health probe fallback path) before resuming the bump.
+4. Re-run the recipe; only then append a new row to the drift log.
+
 ## 7. Token field-name drift log
 
 Plan §3.2.2 — schwab-py docs explicitly say "do not inspect token.json
