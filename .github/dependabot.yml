@@ -1,0 +1,73 @@
+# Dependabot configuration — schwab-marketdata-mcp
+#
+# Strategy:
+# - Weekly cadence on Monday (low review fatigue; one PR per week max).
+# - Group minor + patch into a single PR per ecosystem so the user does not
+#   review 8 unrelated tiny bumps separately.
+# - Ignore `schwab-py` because it is the bus-factor-1 dependency tracked by
+#   docs/THREAT_MODEL.md §6 and §6.6 and any bump must be done manually with
+#   the upgrade checklist + drift log; an auto-PR would defeat that gate.
+# - Ignore major-version bumps for the `mcp` SDK because plan §6.5 requires
+#   running the 1.x→2.x checklist before the bump.
+
+version: 2
+updates:
+  # Python deps via uv.lock (pyproject.toml is the manifest).
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "08:00"
+      timezone: "Asia/Shanghai"
+    open-pull-requests-limit: 1
+    assignees:
+      - "kevinkda"
+    reviewers:
+      - "kevinkda"
+    labels:
+      - "dependencies"
+      - "python"
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+    groups:
+      python-minor-and-patch:
+        applies-to: "version-updates"
+        update-types:
+          - "minor"
+          - "patch"
+    ignore:
+      # schwab-py is bus-factor-1; bumps require manual review per
+      # docs/THREAT_MODEL.md §6 + §6.6 drift log.  Suppress auto-PR.
+      - dependency-name: "schwab-py"
+      # mcp 1.x -> 2.x major bump requires the §6.5 compatibility checklist.
+      - dependency-name: "mcp"
+        update-types:
+          - "version-update:semver-major"
+
+  # GitHub Actions workflow versions (actions/checkout, astral-sh/setup-uv, ...).
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "08:00"
+      timezone: "Asia/Shanghai"
+    open-pull-requests-limit: 1
+    assignees:
+      - "kevinkda"
+    reviewers:
+      - "kevinkda"
+    labels:
+      - "dependencies"
+      - "github-actions"
+    commit-message:
+      prefix: "chore(ci)"
+      include: "scope"
+    groups:
+      actions-minor-and-patch:
+        applies-to: "version-updates"
+        update-types:
+          - "minor"
+          - "patch"
