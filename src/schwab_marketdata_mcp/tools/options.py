@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..cache import Cache
 from ..models import GetOptionChainInput, GetOptionExpirationChainInput
 from . import _enums
 from ._runtime import call_endpoint
@@ -38,7 +39,15 @@ async def get_option_chain_impl(args: GetOptionChainInput) -> dict[str, Any]:
             entitlement=ent,
         )
 
-    return await call_endpoint("get_option_chain", fetch)
+    cache_params = args.model_dump(mode="json", exclude_none=True)
+
+    def _lookup(cache: Cache) -> dict[str, Any] | None:
+        return cache.get_option_chain(cache_params)
+
+    def _store(cache: Cache, raw: dict[str, Any]) -> None:
+        cache.put_option_chain(cache_params, raw)
+
+    return await call_endpoint("get_option_chain", fetch, cache_lookup=_lookup, cache_store=_store)
 
 
 async def get_option_expiration_chain_impl(

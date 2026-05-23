@@ -129,7 +129,9 @@ async def test_get_server_info_includes_13_tools(fake_client: None) -> None:
     out = await server.get_server_info()
     assert len(out["supported_tools"]) == 13
     assert "compatible_skill_version_range" not in out  # plan §3.1 — not exposed
-    assert out["server_version"] == "0.1.0"
+    from schwab_marketdata_mcp import __version__ as _v
+
+    assert out["server_version"] == _v
 
 
 # ---------------------------------------------------------------------------
