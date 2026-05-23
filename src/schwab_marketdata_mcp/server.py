@@ -1,4 +1,4 @@
-"""FastMCP server entry point — 12 outward-facing tools.
+"""FastMCP server entry point — 13 outward-facing tools.
 
 Plan §3.2.3 — the **first** thing the module does is harden stdio so that
 no stray ``print`` from schwab-py / httpx pollutes the JSON-RPC stream.
@@ -130,6 +130,7 @@ from .tools import (  # noqa: E402
     options,
     price_history,
     quotes,
+    streaming,
 )
 
 log = logging.getLogger("schwab_marketdata_mcp.server")
@@ -192,7 +193,7 @@ async def _run_tool(
 
 
 # ---------------------------------------------------------------------------
-# 12 tools — each is a thin wrapper that validates → delegates → catches.
+# 13 tools — each is a thin wrapper that validates → delegates → catches.
 # ---------------------------------------------------------------------------
 
 
@@ -403,6 +404,29 @@ async def health_check() -> dict[str, Any]:
 )
 async def get_server_info() -> dict[str, Any]:
     return await meta.get_server_info_impl(server_version=SERVER_VERSION)
+
+
+@mcp.tool(
+    name="get_streaming_snapshot",
+    description=(
+        "Experimental: open a Schwab Streamer WebSocket, collect messages "
+        "for the requested duration (default 2s, hard-bounded 500ms-10s), "
+        "then disconnect and return per-symbol snapshots. service options: "
+        "LEVELONE_EQUITIES (real-time bid/ask/last/volume) or CHART_EQUITY "
+        "(real-time 1-minute candles). Use sparingly - long-running "
+        "subscriptions remain out of scope; see plan section 10."
+    ),
+)
+async def get_streaming_snapshot_(
+    symbols: list[str],
+    service: str,
+    duration_ms: int | None = None,
+) -> dict[str, Any]:
+    return await _run_tool(
+        {"symbols": symbols, "service": service, "duration_ms": duration_ms},
+        "get_streaming_snapshot",
+        lambda v: streaming.get_streaming_snapshot_impl(v),
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -2,10 +2,12 @@
 
 [English](./README.md) | [简体中文](./README_zh.md)
 
-[![Status](https://img.shields.io/badge/status-alpha-orange.svg)](./README.md)
-[![Python](https://img.shields.io/badge/python-%3E%3D3.11-blue.svg)](#requirements)
-[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)](#requirements)
-[![License](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
+![Tests](https://img.shields.io/github/actions/workflow/status/kevinkda/schwab-marketdata-mcp/test.yml?branch=main&label=tests)
+![Coverage](https://img.shields.io/badge/coverage-94.92%25-brightgreen)
+![License](https://img.shields.io/github/license/kevinkda/schwab-marketdata-mcp)
+![Python](https://img.shields.io/badge/python-3.11+-blue)
+![Status](https://img.shields.io/badge/status-alpha-orange)
+![Release](https://img.shields.io/github/v/release/kevinkda/schwab-marketdata-mcp)
 
 Production-grade **Model Context Protocol (MCP)** server that exposes the
 Charles Schwab **Market Data Production** API as **12 tools** (10 endpoints + 2
@@ -284,6 +286,55 @@ Detailed per-tool reference is below.
 > See [`schwab-marketdata-skill`](https://github.com/kevinkda/schwab-marketdata-skill)
 > for full input / output schemas, edge cases, retry semantics, and
 > end-to-end usage playbooks.
+
+### Data coverage clarifications
+
+#### `get_price_history` is the candlestick / kline endpoint
+
+If you're looking for OHLCV bars (candles, klines, candlesticks),
+`get_price_history` is the tool. It returns:
+
+```json
+{
+  "candles": [
+    {"open": 432.10, "high": 432.55, "low": 431.92, "close": 432.40, "volume": 12034, "datetime": 1716470400000},
+    {"open": 432.40, "high": 432.62, "low": 432.18, "close": 432.50, "volume":  9821, "datetime": 1716470700000}
+  ],
+  "symbol": "VOO",
+  "empty": false
+}
+```
+
+Supported granularity matrix (Schwab Market Data API limits):
+
+| period_type | Legal `frequency_type` × `frequency` | Historical lookback |
+|-------------|--------------------------------------|---------------------|
+| `DAY`       | `MINUTE` × {1, 5, 10, 15, 30}        | ~48 days (1-min), ~9 months (5-30 min) |
+| `MONTH`     | `DAILY` / `WEEKLY`                   | up to 6 months      |
+| `YEAR`      | `DAILY` / `WEEKLY` / `MONTHLY`       | **up to 20 years**  |
+| `YEAR_TO_DATE` | `DAILY` / `WEEKLY`                | year-to-date        |
+
+> Sub-minute candles (seconds, ticks) are not provided by the Schwab Market
+> Data API. For real-time minute candles, see the Streaming snapshot tool
+> (v0.2 P1 candidate).
+
+#### What the Schwab Market Data API does NOT provide
+
+The following data is **architecturally unavailable** through the Schwab
+Market Data Production API and would require third-party providers:
+
+| Data type | Status | Recommended third-party |
+|-----------|--------|-------------------------|
+| Time & sales / tape (trade-level) | Not in REST or Streaming since Schwab's 2024 API migration removed `TIMESALE_*` services | [Polygon.io `/v3/trades/{ticker}`](https://polygon.io/docs/stocks/get_v3_trades__ticker) (full SIP, ~$199/mo); [Tiingo IEX](https://api.tiingo.com/documentation/iex) ($10/mo, IEX-only); [Alpaca tick API](https://docs.alpaca.markets/reference/stocktrades) (free tier, paid $99/mo for SIP) |
+| Tick-by-tick history | Not in Schwab API | Same as above |
+| Level 2 historical snapshots (NYSE Book / NASDAQ Book replay) | Streaming only, no REST history | Polygon.io / Databento |
+| Fundamental / earnings time series (EPS history, revenue history, etc.) | `quotes` carry FUNDAMENTAL fields but no historical endpoint | [FMP](https://financialmodelingprep.com/), [Tiingo](https://api.tiingo.com/), [Polygon.io fundamentals](https://polygon.io/docs/stocks/financials) |
+| News / SEC filings | Not in Market Data API | [Polygon.io news](https://polygon.io/docs/stocks/get_v2_reference_news), [SEC EDGAR](https://www.sec.gov/edgar) |
+
+**Trader API endpoints** (account, orders, transactions, positions) are
+explicitly out of scope per [`docs/REGISTER.md`](docs/REGISTER.md) — this
+server is **read-only Market Data only**. See plan §1 / §10 for the
+rationale.
 
 ---
 
