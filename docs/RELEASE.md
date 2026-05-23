@@ -263,9 +263,9 @@ a tag name that has been published, even if deleted.
 | README (EN + ZH) | ✅ |
 | `pyproject.toml` version | ✅ (`0.1.0`, suitable for initial release) |
 | `main` pushed to `origin` | ✅ (in sync with `origin/main`) |
-| `CHANGELOG.md` | ⚠️ **missing — create before tagging** |
+| `CHANGELOG.md` | ✅ added in 6a9aca2; `[0.1.0]` section frozen at release time |
 | Windows native support | ❌ Not supported. Documented as `experimental` in `docs/WINDOWS_PORTING.md`. WSL2 is the supported path. |
-| Uncommitted edits in working tree | ⚠️ Several `M` files at doc creation time — review and commit/discard before release |
+| Uncommitted edits in working tree | ✅ clean as of 2026-05-23 |
 
 **Verdict:** ready for `v0.1.0` once `CHANGELOG.md` is added and the working
 tree is clean.
