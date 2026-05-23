@@ -321,6 +321,28 @@ uv run python -m schwab_marketdata_mcp.health
 
 ---
 
+## 致谢与上游引用
+
+本项目构建于多个优秀开源库之上：
+
+- **[schwab-py](https://github.com/alexgolec/schwab-py)**（作者
+  Alex Golec）—— Charles Schwab Trader / Market Data API 的非官方
+  Python wrapper（MIT 许可证）。处理三段式 OAuth、token 自动 refresh，
+  并为所有 Schwab Market Data Production endpoint 提供类型枚举。若无
+  `schwab-py`，本 MCP 服务端需多花 ~1.5 天工作量且稳定性会显著降低。
+- **[mcp](https://github.com/modelcontextprotocol/python-sdk)** ——
+  Anthropic 官方的 Model Context Protocol Python SDK（MIT 许可证）。
+- **[httpx](https://github.com/encode/httpx)** —— 现代 HTTP 客户端
+  （BSD-3-Clause 许可证）。
+- **[pydantic](https://github.com/pydantic/pydantic)** —— 基于 Python
+  类型注解的数据校验库（MIT 许可证）。
+
+本项目**与 Charles Schwab Corporation 或 Alex Golec 无关，未受其背书或
+赞助**。使用前请阅读 Schwab 的
+[服务条款](https://www.schwab.com/legal/terms) 并自行承担风险。
+
+---
+
 ## License
 
 MIT License —— 详见 [LICENSE](./LICENSE)。

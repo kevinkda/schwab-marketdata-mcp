@@ -333,6 +333,30 @@ excerpts.
 
 ---
 
+## Acknowledgements
+
+This project is built on top of several excellent open-source libraries:
+
+- **[schwab-py](https://github.com/alexgolec/schwab-py)** by Alex Golec —
+  Unofficial Charles Schwab Trader / Market Data API wrapper for Python
+  (MIT License). Handles 3-legged OAuth, token refresh rotation, and
+  provides typed enums for all Schwab Market Data Production endpoints.
+  Without `schwab-py`, this MCP server would be ~1.5 days more work and
+  significantly more brittle.
+- **[mcp](https://github.com/modelcontextprotocol/python-sdk)** —
+  Anthropic's official Python SDK for the Model Context Protocol
+  (MIT License).
+- **[httpx](https://github.com/encode/httpx)** — Next-generation HTTP
+  client (BSD-3-Clause).
+- **[pydantic](https://github.com/pydantic/pydantic)** — Data validation
+  using Python type hints (MIT License).
+
+This project is **not affiliated with, endorsed by, or sponsored by
+Charles Schwab Corporation or Alex Golec**. Use at your own risk per
+Schwab's [Terms of Service](https://www.schwab.com/legal/terms).
+
+---
+
 ## License
 
 MIT License — see [LICENSE](./LICENSE).
