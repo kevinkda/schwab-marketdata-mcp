@@ -7,8 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-05-23
+
 ### Added
 
+- **Windows Tier A native support verification doc** (`docs/WINDOWS_VERIFICATION.md`):
+  scaffold for testing the Tier A implementation on real Windows
+  hardware. Lists 8 acceptance criteria, expected outputs, and
+  failure-mode triage. Status: `pending verification on Windows hardware`.
+- **Dependabot config** (`.github/dependabot.yml`): weekly Python +
+  GitHub Actions dependency updates. Single-PR/week with minor + patch
+  grouped. Ignores schwab-py (manual review per drift log).
+- **schwab-py upgrade drift log** (`docs/THREAT_MODEL.md §6.6`):
+  records TokenState fields, Movers.Index members, Client.token_age
+  signature for each schwab-py version bump. Mandatory before
+  merging upgrade PRs.
+- **HOURS log** (`docs/HOURS.md`): cumulative dev hours per
+  STRATEGY.md §2.3 budget tracking. Per-version + Phase 0 alarm
+  (90h) + early-exit threshold (75% of 480h = 360h).
+- **README badges + v0.3 sprint navigation** (English + Chinese
+  mirrors).
 - `docs/SLO.md`: 7 measurable service-level objectives (latency p95,
   cache hit rate, token health uptime, error rate, etc.) with
   measurement sources and window definitions.  Acts as the source of
@@ -39,6 +57,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unsets `SCHWAB_RATE_LIMIT_PER_MIN` so a developer's `.env` (auto-
   loaded by `uv run`) can no longer pollute `health_check`'s
   rate-limit reading inside tests.
+
+### Compatibility
+
+- Test count: 314 → 336 passing on Linux (89.08% coverage).
+- 4 critical modules (`errors`, `security`, `auth_logic`, `models`)
+  remain at 100%.
+- All 14 MCP tools unchanged in API surface; new fields are additive.
 
 ## [0.2.0] - 2026-05-23
 
@@ -209,7 +234,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - mcp Python SDK >=1.6,<2.0; schwab-py >=1.5.1,<1.6;
   httpx >=0.28.1,<0.29; respx >=0.22.0,<0.24.
 
-[Unreleased]: https://github.com/kevinkda/schwab-marketdata-mcp/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/kevinkda/schwab-marketdata-mcp/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/kevinkda/schwab-marketdata-mcp/releases/tag/v0.3.0
 [0.2.0]: https://github.com/kevinkda/schwab-marketdata-mcp/releases/tag/v0.2.0
 [0.1.1]: https://github.com/kevinkda/schwab-marketdata-mcp/releases/tag/v0.1.1
 [0.1.0]: https://github.com/kevinkda/schwab-marketdata-mcp/releases/tag/v0.1.0
