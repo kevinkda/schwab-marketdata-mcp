@@ -125,9 +125,9 @@ async def test_health_check_offline_safe(fake_client: None) -> None:
     assert out["rate_limit_remaining_per_min"] == 120
 
 
-async def test_get_server_info_includes_13_tools(fake_client: None) -> None:
+async def test_get_server_info_includes_14_tools(fake_client: None) -> None:
     out = await server.get_server_info()
-    assert len(out["supported_tools"]) == 13
+    assert len(out["supported_tools"]) == 14
     assert "compatible_skill_version_range" not in out  # plan §3.1 — not exposed
     from schwab_marketdata_mcp import __version__ as _v
 

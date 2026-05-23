@@ -464,6 +464,10 @@ class GetServerInfoInput(_BaseInput):
     """No input — kept for schema parity in `list_tools`."""
 
 
+class GetCacheStatsInput(_BaseInput):
+    """No input — local-only meta query for the DuckDB cache."""
+
+
 class GetStreamingSnapshotInput(_BaseInput):
     """Bounded WebSocket snapshot via ``StreamerClient`` (plan §10 follow-up).
 
@@ -521,12 +525,13 @@ TOOL_INPUT_MODELS: Final[dict[str, type[_BaseInput]]] = {
     "get_instrument_by_cusip": GetInstrumentByCusipInput,
     "health_check": HealthCheckInput,
     "get_server_info": GetServerInfoInput,
+    "get_cache_stats": GetCacheStatsInput,
     "get_streaming_snapshot": GetStreamingSnapshotInput,
 }
 
 
 def supported_tool_names() -> list[str]:
-    """Return all 13 tool names in deterministic order."""
+    """Return all 14 tool names in deterministic order."""
     return list(TOOL_INPUT_MODELS.keys())
 
 
@@ -566,6 +571,7 @@ __all__ = [
     "Cusip",
     "Frequency",
     "FrequencyType",
+    "GetCacheStatsInput",
     "GetInstrumentByCusipInput",
     "GetMarketHourSingleInput",
     "GetMarketHoursInput",

@@ -407,6 +407,22 @@ async def get_server_info() -> dict[str, Any]:
 
 
 @mcp.tool(
+    name="get_cache_stats",
+    description=(
+        "Local DuckDB cache health (offline-safe; never calls Schwab). "
+        "Returns db_path, enabled flag, size_mb, rows_per_table, "
+        "expired_rows, hit_rate_24h, hits_24h, misses_24h so the agent "
+        "can reason about cache effectiveness before bypassing."
+    ),
+)
+async def get_cache_stats() -> dict[str, Any]:
+    try:
+        return await meta.get_cache_stats_impl()
+    except SchwabError as exc:
+        return _err_to_dict(exc)
+
+
+@mcp.tool(
     name="get_streaming_snapshot",
     description=(
         "Experimental: open a Schwab Streamer WebSocket, collect messages "
