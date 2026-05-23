@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,25 @@ import pytest
 ROOT = Path(__file__).resolve().parent
 FIXTURES_DIR = ROOT / "fixtures"
 SEED_DIR = FIXTURES_DIR / "seed"
+
+
+def pytest_collection_modifyitems(
+    config: pytest.Config,  # pytest hook signature requires this parameter
+    items: list[pytest.Item],
+) -> None:
+    """Honor the ``@pytest.mark.posix_only`` marker (Tier A Windows port).
+
+    Tests marked ``posix_only`` rely on POSIX file-permission semantics
+    (``stat.S_IMODE(...) == 0o600`` etc.) that NTFS does not faithfully
+    emulate.  Skip them when running on Windows.
+    """
+    del config
+    if sys.platform != "win32":
+        return
+    skip_posix = pytest.mark.skip(reason="POSIX-only file-permission semantics")
+    for item in items:
+        if "posix_only" in item.keywords:
+            item.add_marker(skip_posix)
 
 
 @pytest.fixture(autouse=True)
