@@ -8,6 +8,19 @@
 ![Python](https://img.shields.io/badge/python-3.11+-blue)
 ![Status](https://img.shields.io/badge/status-alpha-orange)
 ![Release](https://img.shields.io/github/v/release/kevinkda/schwab-marketdata-mcp)
+![Releases](https://img.shields.io/github/release-date/kevinkda/schwab-marketdata-mcp?label=last%20release)
+![CI](https://img.shields.io/github/actions/workflow/status/kevinkda/schwab-marketdata-mcp/test.yml?branch=main&label=CI&logo=github)
+
+> **v0.3 sprint (in flight)** — Sprint A focuses on Windows Tier A real-hardware
+> verification, dependency hygiene (Dependabot), schwab-py drift log, and a
+> cumulative hour ledger.  See:
+>
+> - [`docs/WINDOWS_VERIFICATION.md`](docs/WINDOWS_VERIFICATION.md) — 8-criterion
+>   acceptance checklist for a volunteer with a real Windows box.
+> - [`docs/THREAT_MODEL.md` §6.6](docs/THREAT_MODEL.md) — schwab-py upgrade
+>   drift log (must be filled in **before** any schwab-py bump merges).
+> - [`docs/HOURS.md`](docs/HOURS.md) — cumulative hours vs the 480 h project
+>   budget; current usage ≈ 5%.
 
 Production-grade **Model Context Protocol (MCP)** server that exposes the
 Charles Schwab **Market Data Production** API as **14 tools** (10 endpoints + 3
