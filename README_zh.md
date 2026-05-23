@@ -10,8 +10,8 @@
 ![Release](https://img.shields.io/github/v/release/kevinkda/schwab-marketdata-mcp)
 
 生产级 **Model Context Protocol（MCP）** 服务端，把 Charles Schwab 的
-**Market Data Production** API 封装为 **13 个 tool**（10 个 endpoint +
-2 个元工具 + 1 个实验性 streaming snapshot），可直接接入 Cursor、Claude
+**Market Data Production** API 封装为 **14 个 tool**（10 个 endpoint +
+3 个元工具 + 1 个实验性 streaming snapshot），可直接接入 Cursor、Claude
 Code 以及任何兼容 MCP 协议的 AI agent。
 
 > **只读** —— 本项目仅调用 Schwab Market Data API，**不**调用 Schwab Trader
@@ -108,6 +108,13 @@ uv run pytest --cov                              # 整体 ≥85%，关键模块 
   `SCHWAB_RATE_LIMIT_PER_MIN` 调整。
 - **自适应重试**：对 `429` 与 `5xx` 默认重试 2 次，指数退避，并解析
   `Retry-After` 头。
+- **DuckDB 本地缓存** —— 单文件库 `${XDG_STATE_HOME}/schwab-marketdata-mcp/cache.duckdb`，
+  自动短路 5 个可缓存 tool 的重复读取（`get_quote`、`get_price_history`、
+  `get_option_chain`、`search_instruments`、`get_instrument_by_cusip`）。
+  按表分级 TTL：quotes 60 s / option chain 5 m / instruments 24 h /
+  price history 「历史 candle 永久 + 最近 1 h 内若超过 60 s 强制刷新」。
+  通过 `SCHWAB_CACHE_ENABLED` 总开关 / `SCHWAB_CACHE_BYPASS=1` 单次绕过。
+  这一层也为 Shakeout 研究 playbook 提供本地 OLAP 查询接口。
 - **健康检查**（`schwab_marketdata_mcp.health`）针对 token 寿命、丢失、
   格式错误、权限不安全等情况返回不同退出码，可直接接入 cron / launchd
   告警。
@@ -125,7 +132,7 @@ uv run pytest --cov                              # 整体 ≥85%，关键模块 
 - **不可二次分发数据约束** —— 配套的 workflows skill 在写入前会先调用
   `gh repo view --json isPrivate`，拒绝把 Schwab 数据写入公开仓库。
 
-### 工具面 —— 13 个 MCP tool
+### 工具面 —— 14 个 MCP tool
 
 名字 → endpoint 速查表：
 
@@ -141,9 +148,10 @@ uv run pytest --cov                              # 整体 ≥85%，关键模块 
 | 8  | `get_movers`                  | `GET /movers/{symbol_id}`                  |
 | 9  | `search_instruments`          | `GET /instruments`                         |
 | 10 | `get_instrument_by_cusip`     | `GET /instruments/{cusip_id}`              |
-| 11 | `health_check`                | 本地 —— token 寿命 + 最近错误数            |
+| 11 | `health_check`                | 本地 —— token 寿命 + 缓存健康              |
 | 12 | `get_server_info`             | 本地 —— 版本号 + 支持的 tool 列表          |
-| 13 | `get_streaming_snapshot` 🧪    | Streamer WebSocket —— 有界快照（实验性）   |
+| 13 | `get_cache_stats`             | 本地 —— DuckDB 缓存行数 / 体积 / 命中率   |
+| 14 | `get_streaming_snapshot` 🧪    | Streamer WebSocket —— 有界快照（实验性）   |
 
 每个 tool 的详细说明见下文。
 
@@ -277,7 +285,7 @@ uv run pytest --cov                              # 整体 ≥85%，关键模块 
 - **入参**：无。
 - **返回**：
   `{server_version, mcp_sdk_version, schwab_py_version,
-  supported_tools: [...13 个 tool 名], platform_supported_v1}`
+  supported_tools: [...14 个 tool 名], platform_supported_v1}`
 - **示例**：`{}`
 
 #### 实验性 —— 有界 streaming snapshot（1 个）

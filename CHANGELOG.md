@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **DuckDB local cache layer** (plan v0.2 sprint task #2): a single-file
+  DuckDB store under
+  `${XDG_STATE_HOME:-~/.local/state}/schwab-marketdata-mcp/cache.duckdb`
+  with four cache tables (quotes, price history, option chain,
+  instruments) plus an internal `cache_events` log used by the new
+  `get_cache_stats` meta tool. Tool implementations for
+  `get_quote`, `get_price_history`, `get_option_chain`,
+  `search_instruments`, and `get_instrument_by_cusip` short-circuit
+  through the cache before reaching the rate limiter / Schwab API.
+- TTLs follow a per-table strategy: 60 s for quotes, 5 m for option
+  chains, 24 h for instrument metadata, and "historical candles
+  immutable + recent candles refresh after 60 s" for price history
+  (the recent boundary is 1 h).
+- New env knobs: `SCHWAB_CACHE_ENABLED=true|false` (default true)
+  and `SCHWAB_CACHE_BYPASS=true` (single-call force fresh).
+- New MCP tool `get_cache_stats` (14th tool): returns
+  `{db_path, enabled, size_mb, rows_per_table, expired_rows,
+  hit_rate_24h, hits_24h, misses_24h}`. Offline-safe like the
+  other meta tools.
+- `health_check` now also returns `cache_enabled`, `cache_size_mb`,
+  `cache_hit_rate_24h`.
+- `usage.jsonl` now carries an optional `cache_status` field per row
+  (`hit | miss | bypass | disabled`) so the 24 h hit-rate aggregate
+  is auditable from the same JSONL stream as token health.
+- `tests/test_cache.py` adds 28 unit + integration tests covering hit
+  / miss / expire / replace / window query / OLAP / disabled /
+  bypass / corrupt-recovery / concurrent-writers / POSIX mode 0o600
+  / `_cache_status` payload field / health_check shape.
+
+### Changed
+
+- `pyproject.toml`: pin `duckdb>=1.0,<2.0` as a runtime dependency.
+- Tool count surface in README / `get_server_info` / stdio integration
+  test moved from 13 → 14.
+
+### Security
+
+- The cache DB file is created with mode `0o600` (parent dir
+  `0o700`) on POSIX, falling back to inherited `%LOCALAPPDATA%`
+  ACLs on Windows — same pattern as `token.json` / `usage.jsonl`.
+  THREAT_MODEL.md §1 / §3 now lists the DB as asset A7.
+- A corrupt DB file is renamed aside as
+  `cache.duckdb.corrupt-<unix_ts>` and a fresh DB is created on
+  next call, never silently overwriting potentially recoverable
+  data.
+
 ## [0.1.1] - 2026-05-23
 
 ### Added

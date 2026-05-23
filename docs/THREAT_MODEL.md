@@ -21,6 +21,7 @@
 | A4  | Schwab market data responses                  | Medium                        | **Non-redistributable** under SOSA; see ToS snapshot. |
 | A5  | MCP stdio JSON-RPC channel                    | Medium                        | Corruption breaks the agent <-> server contract. |
 | A6  | Local FS — `~/.local/state/schwab-marketdata-mcp/` | High                       | Token persistence; world-readable would leak A1–A3. |
+| A7  | DuckDB cache file (`cache.duckdb`)            | Medium                        | Caches Schwab market-data responses; non-redistributable per ToS. Sits inside A6's parent dir and inherits its 0o700 hardening; the file itself is `0o600`. |
 
 ## 2. Trust boundaries
 
@@ -54,6 +55,8 @@ B3: network boundary (TLS to Schwab production)
 | T10| I      | Token file ends up in iCloud/Dropbox (replicates secret to vendor)        | `is_cloud_path` best-effort detection; explicit `--i-understand-cloud-sync-risk` opt-in required.        |
 | T11| T      | Attacker injects shell metachars via `symbol` parameter                   | Pydantic `StringConstraints(pattern=…)` per layer (stock / index / OSI / CUSIP); request goes via `httpx` `params=` not URL string concat. |
 | T12| I      | Schwab returns market data; user accidentally `git push` to public repo   | Workflows skill's `gh repo view --json isPrivate` pre-flight check; ToS snapshot in skill `references/`. |
+| T13| T      | DuckDB cache file (A7) tampered with — attacker swaps in fake quotes      | File is created `0o600` under the same `0o700` parent as `token.json`; corrupt DB triggers quarantine to `cache.duckdb.corrupt-<ts>` and a fresh DB is opened. Cache reads are best-effort: any DuckDB / IO error returns `None` (treated as miss) so the live API path is always reachable. |
+| T14| I      | Cache file replicates Schwab market data to iCloud / Dropbox              | Lives in the same `XDG_STATE_HOME` parent as `token.json`; the existing `is_cloud_path` opt-in prompt covers both files (user-supplied `--config-dir` is allow-list checked). |
 
 ## 4. OWASP Top 10 mapping
 
@@ -145,6 +148,10 @@ budget), **the following are stable, reusable in isolation**:
 - `models.py` — Pydantic v2 schemas reusable for any other Schwab client.
 - `security.py` — path allow-list + flock primitives reusable for any
   token-bearing CLI tool.
+- `cache.py` — DuckDB-backed local cache with TTL + best-effort
+  corrupt-recovery semantics, reusable for any other rate-limited
+  HTTP API client (the four cache tables are independent of the
+  Schwab schema).
 - `tests/fixtures/seed/*.json` — hand-crafted shape references, no real
   market data.
 
