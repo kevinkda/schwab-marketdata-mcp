@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `docs/SLO.md`: 7 measurable service-level objectives (latency p95,
+  cache hit rate, token health uptime, error rate, etc.) with
+  measurement sources and window definitions.  Acts as the source of
+  truth for the in-band alerting policy implemented by `health_check`.
+
 ## [0.2.0] - 2026-05-23
 
 ### Added
