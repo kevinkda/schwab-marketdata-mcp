@@ -284,6 +284,7 @@ def test_make_client_credential_missing(monkeypatch: pytest.MonkeyPatch) -> None
     assert ei.value.reason in ("token_not_initialized", "credential_missing")
 
 
+@pytest.mark.posix_only
 def test_make_client_token_state_branches(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Cover MISSING, INSECURE_PERMS, MALFORMED branches in _enforce_token_or_raise."""
     state = tmp_path / "state"

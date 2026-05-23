@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import stat
+import sys
 from pathlib import Path
 
 import pytest
@@ -217,6 +218,7 @@ def test_token_file_state_missing(tmp_path: Path) -> None:
     assert parsed is None
 
 
+@pytest.mark.posix_only
 def test_token_file_state_insecure_before_malformed(tmp_path: Path) -> None:
     """Plan §3.2.2.1 — perms checked BEFORE json.load."""
     f = tmp_path / "tok.json"
@@ -253,6 +255,7 @@ def test_token_file_state_valid(tmp_path: Path) -> None:
     assert parsed == {"creation_timestamp": 1700000000}
 
 
+@pytest.mark.posix_only
 def test_enforce_token_perms_raises_on_wrong_mode(tmp_path: Path) -> None:
     f = tmp_path / "tok.json"
     f.write_text("{}")
@@ -264,6 +267,7 @@ def test_enforce_token_perms_raises_on_wrong_mode(tmp_path: Path) -> None:
     assert str(f) in ei.value.hint
 
 
+@pytest.mark.posix_only
 def test_enforce_token_perms_raises_on_wrong_parent(tmp_path: Path) -> None:
     sub = tmp_path / "schwab"
     sub.mkdir()
@@ -290,6 +294,45 @@ def test_insecure_perms_hint_uses_actual_path() -> None:
     assert "0o644" in h
 
 
+def test_insecure_perms_hint_windows_branch_actual_mode_zero() -> None:
+    """Tier A Windows port — when ``actual_mode == 0`` (NTFS shim), hint
+    must mention %LOCALAPPDATA% rather than ``chmod`` exclusively."""
+    p = Path("/tmp/win/token.json")
+    h = insecure_perms_hint(p, 0)
+    assert str(p) in h
+    assert "%LOCALAPPDATA%" in h
+
+
+def test_enforce_token_perms_windows_parent_unreadable_skipped(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Tier A Windows port — when the shim reports the parent dir as
+    "insecure" but ``file_mode`` returns 0, ``enforce_token_perms`` must
+    swallow the false positive instead of raising."""
+    from schwab_marketdata_mcp import _platform
+
+    f = tmp_path / "tok.json"
+    f.write_text("{}")
+    monkeypatch.setattr(_platform, "IS_WINDOWS", True)
+    # is_secure_perms returns True on Windows (file exists & readable),
+    # but for the parent we want the shim to claim it's insecure; force
+    # that branch by stubbing it.
+    real_is_secure_perms = _platform.is_secure_perms
+
+    def stub(path: Path, expected: int) -> bool:
+        # We only care about the parent dir reporting as insecure; the file
+        # itself stays "secure" so we exercise the Windows shim branch.
+        return path == f
+
+    monkeypatch.setattr(_platform, "is_secure_perms", stub)
+    try:
+        enforce_token_perms(f)  # must not raise on Windows
+    finally:
+        monkeypatch.setattr(_platform, "is_secure_perms", real_is_secure_perms)
+
+
+@pytest.mark.posix_only
 def test_secure_chmod(tmp_path: Path) -> None:
     f = tmp_path / "x.json"
     f.write_text("{}")
@@ -298,6 +341,7 @@ def test_secure_chmod(tmp_path: Path) -> None:
     assert stat.S_IMODE(f.stat().st_mode) == 0o600
 
 
+@pytest.mark.posix_only
 def test_ensure_secure_dir_creates_with_700(tmp_path: Path) -> None:
     target = tmp_path / "deep" / "nest"
     ensure_secure_dir(target)
@@ -305,6 +349,7 @@ def test_ensure_secure_dir_creates_with_700(tmp_path: Path) -> None:
     assert stat.S_IMODE(target.stat().st_mode) == 0o700
 
 
+@pytest.mark.posix_only
 def test_ensure_secure_dir_tightens_loose(tmp_path: Path) -> None:
     target = tmp_path / "loose"
     target.mkdir(mode=0o755)
@@ -336,10 +381,17 @@ def test_is_cloud_path_xdg_default_safe() -> None:
 
 
 def test_xdg_state_root_fallback_when_env_unset(monkeypatch: pytest.MonkeyPatch) -> None:
-    """OWASP A05 — confirm fallback to ``~/.local/state`` when the env var is unset."""
+    """OWASP A05 — confirm fallback when the env var is unset.
+
+    POSIX: ``~/.local/state``; Windows: ``%LOCALAPPDATA%`` / ``~/AppData/Local``.
+    """
     monkeypatch.delenv("XDG_STATE_HOME", raising=False)
     p = xdg_state_root()
-    assert p.parts[-2:] == (".local", "state")
+    if sys.platform == "win32":
+        # Windows fallback - either %LOCALAPPDATA% or ~/AppData/Local.
+        assert p.exists() or "AppData" in str(p) or "Local" in str(p)
+    else:
+        assert p.parts[-2:] == (".local", "state")
 
 
 def test_assert_cloud_path_consent_blocks_without_optin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -440,7 +492,8 @@ def test_token_file_lock_acquires_and_releases(tmp_path: Path) -> None:
     p = tmp_path / "tok.json"
     with token_file_lock(p):
         assert (tmp_path / "tok.json.lock").exists()
-        assert stat.S_IMODE((tmp_path / "tok.json.lock").stat().st_mode) == 0o600
+        if sys.platform != "win32":
+            assert stat.S_IMODE((tmp_path / "tok.json.lock").stat().st_mode) == 0o600
     # Should be releasable a second time without contention.
     with token_file_lock(p):
         pass
