@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Final
 from urllib.parse import urlparse
 
+from . import _platform
 from .errors import SchwabAuthError, redact_secrets
 from .security import (
     CLOUD_OPT_IN_FLAG,
@@ -201,10 +202,11 @@ def atomic_write_token(path: Path, payload: Any) -> None:
     """Write ``payload`` (dict/list of JSON-serializable values) atomically.
 
     Steps:
-        1. ``os.umask(0o077)`` to deny group/world read.
+        1. Apply restrictive umask (POSIX) / no-op on Windows to deny
+           group / world read on freshly created files.
         2. Ensure parent dir exists with mode ``0o700``.
         3. Write to ``${path}.tmp`` then ``os.replace`` over ``path``.
-        4. ``chmod 600`` after rename.
+        4. ``chmod 600`` after rename (POSIX) / no-op + warning on Windows.
 
     The write is wrapped in :func:`security.token_file_lock` so concurrent
     Cursor sessions cannot race a refresh-token rotation.
@@ -212,8 +214,7 @@ def atomic_write_token(path: Path, payload: Any) -> None:
     if not isinstance(payload, (dict, list)):
         raise TypeError("token payload must be JSON dict or list")
     ensure_secure_dir(path.parent)
-    old_umask = os.umask(0o077)
-    try:
+    with _platform.restrictive_umask():
         with token_file_lock(path):
             tmp = path.with_suffix(path.suffix + ".tmp")
             data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -225,8 +226,6 @@ def atomic_write_token(path: Path, payload: Any) -> None:
                 os.close(fd)
             os.replace(tmp, path)
             secure_chmod(path)
-    finally:
-        os.umask(old_umask)
 
 
 def make_token_write_func(path: Path) -> Any:

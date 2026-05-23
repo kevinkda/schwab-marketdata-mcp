@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any, Final, Protocol, cast
 
 import httpx
 
+from . import _platform
 from .errors import (
     SchwabAuthError,
     SchwabRateLimitError,
@@ -477,7 +478,7 @@ def _enforce_token_or_raise(token_path: Path) -> None:
             hint=("No token file found.  Run: uv run python -m schwab_marketdata_mcp.auth login_flow"),
         )
     if state is TokenState.INSECURE_PERMS:
-        actual = os.stat(token_path).st_mode & 0o7777
+        actual = _platform.file_mode(token_path)
         raise SchwabAuthError(
             reason="insecure_token_perms",
             hint=insecure_perms_hint(token_path, actual),
