@@ -494,6 +494,9 @@ uv run python -m schwab_marketdata_mcp.health
   playbook）两个 skill，并附带英文镜像。
 - [`docs/REGISTER.md`](docs/REGISTER.md) —— 完整客户端注册指南。
 - [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) —— 架构与威胁模型。
+- [`docs/RELEASE.md`](docs/RELEASE.md) —— 维护者发布流程。
+- [`docs/WINDOWS_PORTING.md`](docs/WINDOWS_PORTING.md) —— Windows native 移植
+  工时评估。
 - [`docs/cron.example`](docs/cron.example) —— 健康检查的 launchd / crontab
   模板。
 
