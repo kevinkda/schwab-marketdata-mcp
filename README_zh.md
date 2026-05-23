@@ -8,6 +8,17 @@
 ![Python](https://img.shields.io/badge/python-3.11+-blue)
 ![Status](https://img.shields.io/badge/status-alpha-orange)
 ![Release](https://img.shields.io/github/v/release/kevinkda/schwab-marketdata-mcp)
+![Releases](https://img.shields.io/github/release-date/kevinkda/schwab-marketdata-mcp?label=last%20release)
+![CI](https://img.shields.io/github/actions/workflow/status/kevinkda/schwab-marketdata-mcp/test.yml?branch=main&label=CI&logo=github)
+
+> **v0.3 sprint（进行中）** —— Sprint A 聚焦 Windows Tier A 真机验证、依赖
+> 卫生（Dependabot）、schwab-py drift log，以及累计工时账本。相关文档：
+>
+> - [`docs/WINDOWS_VERIFICATION.md`](docs/WINDOWS_VERIFICATION.md) ——
+>   面向真实 Windows 真机志愿者的 8 项 acceptance criteria。
+> - [`docs/THREAT_MODEL.md` §6.6](docs/THREAT_MODEL.md) —— schwab-py 升级
+>   drift log（schwab-py 升级 PR 合入**前**必须填）。
+> - [`docs/HOURS.md`](docs/HOURS.md) —— 480 h 项目预算的累计工时；当前 ≈ 5%。
 
 生产级 **Model Context Protocol（MCP）** 服务端，把 Charles Schwab 的
 **Market Data Production** API 封装为 **14 个 tool**（10 个 endpoint +
