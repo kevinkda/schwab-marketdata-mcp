@@ -1,5 +1,10 @@
 # Windows Native Porting Guide — schwab-marketdata-mcp
 
+> **Status: Tier A IMPLEMENTED** (branch `windows-native-tier-a`).
+> The shim, refactor, tests, scheduler docs, and README updates listed in
+> §3-6 below are merged.  Tier B (production-grade `pywin32` ACL +
+> `windows-latest` CI runner) is **not yet implemented**.
+>
 > **Audience**: a Python intermediate developer helping Tang Keyin (kevinkda) port the
 > project from macOS / Linux to Windows 10/11 native (non-WSL).
 >
