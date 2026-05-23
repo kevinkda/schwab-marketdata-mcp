@@ -13,6 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cache hit rate, token health uptime, error rate, etc.) with
   measurement sources and window definitions.  Acts as the source of
   truth for the in-band alerting policy implemented by `health_check`.
+- `Cache.hourly_breakdown(hours=24)`: per-hour `hits`/`misses`/`expired`
+  counts derived from the existing `cache_events` table.  Exposed as a
+  new `hourly_breakdown_24h` field on the `get_cache_stats` MCP tool so
+  LLM agents and the SLO checker can plot an hourly time-series without
+  parsing usage.jsonl.  Sparse output: hours with zero events are
+  omitted; chronological order; ISO-8601 UTC `hour_utc` keys.
 
 ## [0.2.0] - 2026-05-23
 

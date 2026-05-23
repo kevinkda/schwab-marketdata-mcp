@@ -127,8 +127,9 @@ async def get_cache_stats_impl() -> dict[str, Any]:
 
     Returns a dict with ``db_path``, ``enabled``, ``size_mb``,
     ``rows_per_table``, ``expired_rows``, ``hit_rate_24h``,
-    ``hits_24h``, ``misses_24h`` so an LLM agent can reason about
-    cache effectiveness before deciding whether to bypass.
+    ``hits_24h``, ``misses_24h``, ``hourly_breakdown_24h`` so an
+    LLM agent can reason about cache effectiveness before deciding
+    whether to bypass.
     """
     cache = get_cache()
     if cache is None:
@@ -141,9 +142,10 @@ async def get_cache_stats_impl() -> dict[str, Any]:
             "hit_rate_24h": None,
             "hits_24h": 0,
             "misses_24h": 0,
+            "hourly_breakdown_24h": [],
         }
     try:
-        return cache.get_stats().to_dict()
+        out = cache.get_stats().to_dict()
     except Exception as exc:  # pragma: no cover - cache stats must never break tools
         return {
             "db_path": str(cache.db_path),
@@ -154,8 +156,14 @@ async def get_cache_stats_impl() -> dict[str, Any]:
             "hit_rate_24h": None,
             "hits_24h": 0,
             "misses_24h": 0,
+            "hourly_breakdown_24h": [],
             "error": type(exc).__name__,
         }
+    try:
+        out["hourly_breakdown_24h"] = cache.hourly_breakdown(hours=24)
+    except Exception:  # pragma: no cover - breakdown is best-effort
+        out["hourly_breakdown_24h"] = []
+    return out
 
 
 __all__ = ["get_cache_stats_impl", "get_server_info_impl", "health_check_impl"]

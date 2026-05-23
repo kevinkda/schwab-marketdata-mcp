@@ -794,6 +794,59 @@ class Cache:
         except duckdb.Error:
             return 0
 
+    # ------------------------------------------------ hourly breakdown
+
+    def hourly_breakdown(self, hours: int = 24) -> list[dict[str, Any]]:
+        """Per-hour cache hit/miss/expired counts for the last ``hours`` hours.
+
+        Returns a list of dicts in chronological order:
+
+            [{"hour_utc": "2026-05-23T10:00:00Z", "hits": 42,
+              "misses": 8, "expired": 2}, ...]
+
+        Used by ``get_cache_stats`` and the SLO compliance checker.
+        Returns ``[]`` if the DB is unavailable or no events fall in the
+        window.  Hours with zero events are *not* emitted (sparse output).
+        """
+        if hours < 1:
+            raise ValueError("hours must be >= 1")
+        with self._lock:
+            if self._conn is None:
+                return []
+            cutoff = _utcnow() - timedelta(hours=hours)
+            try:
+                rows = self._conn.execute(
+                    """
+                    SELECT
+                        DATE_TRUNC('hour', ts) AS hour_utc,
+                        SUM(CASE WHEN kind = 'hit' THEN 1 ELSE 0 END) AS hits,
+                        SUM(CASE WHEN kind = 'miss' THEN 1 ELSE 0 END) AS misses,
+                        SUM(CASE WHEN kind = 'expired' THEN 1 ELSE 0 END) AS expired
+                    FROM cache_events
+                    WHERE ts >= ?
+                    GROUP BY hour_utc
+                    ORDER BY hour_utc ASC
+                    """,
+                    [cutoff],
+                ).fetchall()
+            except duckdb.Error as exc:
+                log.warning('{"event":"cache_hourly_breakdown_failed","error":"%s"}', exc)
+                return []
+        out: list[dict[str, Any]] = []
+        for hour_dt, hits, misses, expired in rows:
+            iso = _format_hour_utc(hour_dt)
+            if iso is None:
+                continue
+            out.append(
+                {
+                    "hour_utc": iso,
+                    "hits": int(hits or 0),
+                    "misses": int(misses or 0),
+                    "expired": int(expired or 0),
+                }
+            )
+        return out
+
     # -------------------------------------------------- truncate expired
 
     def truncate_expired(self) -> int:
@@ -837,6 +890,24 @@ class Cache:
 # ---------------------------------------------------------------------------
 # Module-level helpers
 # ---------------------------------------------------------------------------
+
+
+def _format_hour_utc(value: Any) -> str | None:
+    """Format a DuckDB ``DATE_TRUNC('hour', ...)`` result as ISO-8601 UTC.
+
+    DuckDB returns naive ``datetime`` for our naive-UTC ``ts`` column.
+    We treat naive values as UTC (matches ``_utcnow``) and emit a
+    canonical ``...Z`` suffix so consumers don't have to think about
+    timezones.
+    """
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.isoformat() + "Z"
+        return value.astimezone(UTC).replace(tzinfo=None).isoformat() + "Z"
+    parsed = _parse_dt(value)
+    if parsed is None:
+        return None
+    return parsed.isoformat() + "Z"
 
 
 def _is_expired(fetched_at: Any, ttl_seconds: Any) -> bool:
