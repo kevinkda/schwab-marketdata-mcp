@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-05-23
+
 ### Added
 
 - `get_streaming_snapshot` tool (experimental): bounded WebSocket
@@ -22,6 +24,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   behavioural cases (happy-path L1, CHART_EQUITY candle, no-message,
   multi-frame aggregation, finally-block disconnect), and 2 server-
   layer integration cases.
+- README "Data coverage clarifications" section explaining
+  `get_price_history` is the kline endpoint, with the legal frequency-
+  period combination matrix and historical lookback per type.
+- README "What the Schwab Market Data API does NOT provide" table
+  listing time-and-sales / tick / Level 2 historical / fundamentals
+  history / news with recommended third-party providers.
+- `CONTRIBUTING.md` with development setup, quality gates, commit
+  message style, branching strategy, and inclusive language guidance.
+- `.github/ISSUE_TEMPLATE/` with bug_report / feature_request /
+  security_report templates.
+- `.github/PULL_REQUEST_TEMPLATE.md` with checklist (tests,
+  conventional commits, CHANGELOG, docs, inclusive language, no
+  secrets).
+- README badges (status / coverage / license / Python / release).
+- `docs/RELEASE.md §9 Repository metadata` with `gh repo edit`
+  commands for description and topics.
+- `docs/REGISTER.md §6 Data coverage limits` cross-referencing the
+  README clarifications section.
 
 ## [0.1.0] - 2026-05-23
 
@@ -106,5 +126,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - mcp Python SDK >=1.6,<2.0; schwab-py >=1.5.1,<1.6;
   httpx >=0.28.1,<0.29; respx >=0.22.0,<0.24.
 
-[Unreleased]: https://github.com/kevinkda/schwab-marketdata-mcp/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/kevinkda/schwab-marketdata-mcp/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/kevinkda/schwab-marketdata-mcp/releases/tag/v0.1.1
 [0.1.0]: https://github.com/kevinkda/schwab-marketdata-mcp/releases/tag/v0.1.0
