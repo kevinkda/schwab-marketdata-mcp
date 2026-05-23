@@ -10,7 +10,7 @@
 ![Release](https://img.shields.io/github/v/release/kevinkda/schwab-marketdata-mcp)
 
 Production-grade **Model Context Protocol (MCP)** server that exposes the
-Charles Schwab **Market Data Production** API as **13 tools** (10 endpoints + 2
+Charles Schwab **Market Data Production** API as **14 tools** (10 endpoints + 3
 meta tools + 1 experimental streaming snapshot tool) for use inside Cursor,
 Claude Code, and any other MCP-aware agent.
 
@@ -110,6 +110,15 @@ Claude Desktop), see [`docs/REGISTER.md`](docs/REGISTER.md).
   configurable via `SCHWAB_RATE_LIMIT_PER_MIN`.
 - **Adaptive retry** on `429` and `5xx` (default: 2 retries with exponential
   backoff and `Retry-After` parsing).
+- **DuckDB local cache** — single-file store at
+  `${XDG_STATE_HOME}/schwab-marketdata-mcp/cache.duckdb` short-circuits
+  repeat reads of the 5 cacheable tools (`get_quote`,
+  `get_price_history`, `get_option_chain`, `search_instruments`,
+  `get_instrument_by_cusip`). Per-table TTLs (60 s quotes / 5 m option
+  chains / 24 h instruments / 1 h-recent + 60 s-stale price history)
+  cut Schwab API pressure and unlock OLAP queries for the Shakeout
+  research workflow. Toggle via `SCHWAB_CACHE_ENABLED`; force fresh
+  via `SCHWAB_CACHE_BYPASS=1`.
 - **Health probe** (`schwab_marketdata_mcp.health`) returns distinct exit
   codes for token age, missing/malformed token, and insecure permissions —
   ready for cron / launchd alerting.
@@ -128,7 +137,7 @@ Claude Desktop), see [`docs/REGISTER.md`](docs/REGISTER.md).
   refuses to write Schwab data into a public repo (it calls
   `gh repo view --json isPrivate` first).
 
-### Tooling surface — 13 MCP tools
+### Tooling surface — 14 MCP tools
 
 At-a-glance map of name → endpoint:
 
@@ -144,9 +153,10 @@ At-a-glance map of name → endpoint:
 | 8  | `get_movers`                  | `GET /movers/{symbol_id}`                  |
 | 9  | `search_instruments`          | `GET /instruments`                         |
 | 10 | `get_instrument_by_cusip`     | `GET /instruments/{cusip_id}`              |
-| 11 | `health_check`                | local — token age + recent error count     |
+| 11 | `health_check`                | local — token age + cache health           |
 | 12 | `get_server_info`             | local — versions + supported tool list     |
-| 13 | `get_streaming_snapshot` 🧪    | Streamer WebSocket — bounded snapshot      |
+| 13 | `get_cache_stats`             | local — DuckDB cache rows / size / hit-rate |
+| 14 | `get_streaming_snapshot` 🧪    | Streamer WebSocket — bounded snapshot      |
 
 Detailed per-tool reference is below.
 
