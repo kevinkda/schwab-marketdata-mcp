@@ -392,3 +392,100 @@ async def test_health_check_includes_cache_fields(use_fake_backend: None) -> Non
     assert "cache_enabled" in out
     assert "cache_size_mb" in out
     assert "cache_hit_rate_24h" in out
+
+
+# ---------------------------------------------------------------------------
+# hourly_breakdown — Sprint v0.3 task #2 (observability candidate D)
+# ---------------------------------------------------------------------------
+
+
+def test_hourly_breakdown_empty(tmp_path: Path) -> None:
+    """No events at all → empty list."""
+    db = tmp_path / "c.duckdb"
+    with cache.Cache(db) as c:
+        out = c.hourly_breakdown(hours=24)
+    assert out == []
+
+
+def test_hourly_breakdown_aggregates_correctly(tmp_path: Path) -> None:
+    """Mixed hits/misses/expired across two distinct hours group correctly."""
+    db = tmp_path / "c.duckdb"
+    now_naive = datetime.now(tz=UTC).replace(tzinfo=None)
+    hour_a = now_naive.replace(minute=0, second=0, microsecond=0) - timedelta(hours=2)
+    hour_b = hour_a + timedelta(hours=1)
+    rows: list[tuple[datetime, str, str]] = [
+        (hour_a + timedelta(minutes=5), "hit", "quotes_cache"),
+        (hour_a + timedelta(minutes=10), "hit", "quotes_cache"),
+        (hour_a + timedelta(minutes=15), "miss", "quotes_cache"),
+        (hour_a + timedelta(minutes=20), "expired", "quotes_cache"),
+        (hour_b + timedelta(minutes=5), "hit", "quotes_cache"),
+        (hour_b + timedelta(minutes=10), "miss", "quotes_cache"),
+        (hour_b + timedelta(minutes=15), "miss", "quotes_cache"),
+        # ``write`` events must not pollute hit/miss/expired counts.
+        (hour_b + timedelta(minutes=20), "write", "quotes_cache"),
+    ]
+    with cache.Cache(db) as c:
+        assert c._conn is not None
+        for ts, kind, table in rows:
+            c._conn.execute(
+                "INSERT INTO cache_events (ts, kind, table_name) VALUES (?, ?, ?)",
+                [ts, kind, table],
+            )
+        out = c.hourly_breakdown(hours=24)
+    assert len(out) == 2
+    by_hour = {row["hour_utc"]: row for row in out}
+    a_iso = hour_a.isoformat() + "Z"
+    b_iso = hour_b.isoformat() + "Z"
+    assert by_hour[a_iso]["hits"] == 2
+    assert by_hour[a_iso]["misses"] == 1
+    assert by_hour[a_iso]["expired"] == 1
+    assert by_hour[b_iso]["hits"] == 1
+    assert by_hour[b_iso]["misses"] == 2
+    assert by_hour[b_iso]["expired"] == 0
+    # Chronological ordering: oldest hour first.
+    assert out[0]["hour_utc"] == a_iso
+    assert out[1]["hour_utc"] == b_iso
+
+
+def test_hourly_breakdown_respects_window(tmp_path: Path) -> None:
+    """Events older than the window are excluded."""
+    db = tmp_path / "c.duckdb"
+    now_naive = datetime.now(tz=UTC).replace(tzinfo=None)
+    inside_hour = now_naive.replace(minute=30, second=0, microsecond=0) - timedelta(hours=1)
+    outside_hour = now_naive - timedelta(hours=25)
+    with cache.Cache(db) as c:
+        assert c._conn is not None
+        c._conn.execute(
+            "INSERT INTO cache_events (ts, kind, table_name) VALUES (?, ?, ?)",
+            [inside_hour, "hit", "quotes_cache"],
+        )
+        c._conn.execute(
+            "INSERT INTO cache_events (ts, kind, table_name) VALUES (?, ?, ?)",
+            [outside_hour, "hit", "quotes_cache"],
+        )
+        out_24 = c.hourly_breakdown(hours=24)
+        out_48 = c.hourly_breakdown(hours=48)
+    # 24h window: only the inside event.
+    assert len(out_24) == 1
+    assert out_24[0]["hits"] == 1
+    # 48h window: both events visible (in two distinct hour buckets).
+    assert sum(row["hits"] for row in out_48) == 2
+
+
+def test_hourly_breakdown_invalid_hours_raises(tmp_path: Path) -> None:
+    db = tmp_path / "c.duckdb"
+    with cache.Cache(db) as c, pytest.raises(ValueError):
+        c.hourly_breakdown(hours=0)
+
+
+async def test_get_cache_stats_includes_hourly_breakdown(
+    monkeypatch: pytest.MonkeyPatch,
+    use_fake_backend: None,
+) -> None:
+    """get_cache_stats MCP tool exposes the new field."""
+    del use_fake_backend
+    from schwab_marketdata_mcp import server
+
+    out = await server.get_cache_stats()
+    assert "hourly_breakdown_24h" in out
+    assert isinstance(out["hourly_breakdown_24h"], list)
