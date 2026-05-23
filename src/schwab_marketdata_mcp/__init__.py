@@ -14,8 +14,8 @@ Public modules:
     - :mod:`schwab_marketdata_mcp.metrics` — usage.jsonl recorder + stats CLI.
     - :mod:`schwab_marketdata_mcp.health` — token health probe CLI.
 
-Platform: macOS 11+ / Linux only (uses ``fcntl.flock``). Windows native is
-not supported in v1.
+Platform: macOS 11+ / Linux fully supported.  Windows 10/11 native is
+experimental (Tier A best-effort) - see ``docs/WINDOWS_PORTING.md``.
 """
 
 from __future__ import annotations

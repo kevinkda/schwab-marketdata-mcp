@@ -41,8 +41,10 @@ def _harden_stdio() -> None:
 
     builtins.print = _safe_print
 
-    # 2) Logging — RotatingFileHandler + StreamHandler(stderr).
-    state_root = Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local" / "state")))
+    # 2) Logging - RotatingFileHandler + StreamHandler(stderr).
+    from . import _platform
+
+    state_root = _platform.state_root()
     log_dir: Path | None = state_root / "schwab-marketdata-mcp" / "logs"
     try:
         assert log_dir is not None

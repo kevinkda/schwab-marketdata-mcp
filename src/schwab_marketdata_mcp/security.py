@@ -1,32 +1,33 @@
-"""Path / permission / file-lock primitives — the security backbone.
+"""Path / permission / file-lock primitives - the security backbone.
 
 Plan §3.2.2.1 (TokenState state machine), §3.3 (credential & file-system
 safety), §6.4 (CRITICAL_MODULES → 100 % coverage).
 
-This module is **macOS / Linux only** — ``fcntl.flock`` is unavailable on
-Windows native.  Plan §1 platform boundary.
+POSIX (macOS / Linux) is the primary supported platform.  Windows native is
+**experimental (Tier A best-effort)** - file locking goes through
+``msvcrt.locking`` and POSIX permission bits are best-effort no-ops backed by
+the default ``%LOCALAPPDATA%`` NTFS ACL.  See ``docs/WINDOWS_PORTING.md``.
 """
 
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import json
 import os
 import stat
-import sys
 from collections.abc import Iterator
 from enum import Enum
 from pathlib import Path
 from typing import Final
 
+from . import _platform
 from .errors import SchwabAuthError
 
 # ---------------------------------------------------------------------------
 # Path allow-list (Plan §3.3.1)
 # ---------------------------------------------------------------------------
 
-#: Required mode bits.  Anything broader (group / world) is rejected.
+#: Required mode bits.  Anything broader (group / world) is rejected on POSIX.
 TOKEN_FILE_MODE: Final[int] = 0o600
 TOKEN_DIR_MODE: Final[int] = 0o700
 
@@ -49,16 +50,14 @@ KNOWN_CLOUD_PREFIXES: Final[tuple[str, ...]] = (
 
 
 def _xdg_state_root() -> Path:
-    """Return ``$XDG_STATE_HOME`` falling back to ``~/.local/state``.
+    """Return ``$XDG_STATE_HOME`` falling back to ``~/.local/state`` (or
+    ``%LOCALAPPDATA%`` on Windows).
 
-    Plan §2 — we deliberately use the same path on macOS as on Linux to
+    Plan §2 - we deliberately use the same path on macOS as on Linux to
     simplify cross-machine token migration.  Time Machine exclusion is the
     user's responsibility (plan §3.3.3).
     """
-    raw = os.environ.get("XDG_STATE_HOME")
-    if raw:
-        return Path(raw).expanduser()
-    return Path.home() / ".local" / "state"
+    return _platform.state_root()
 
 
 def xdg_state_root() -> Path:
@@ -83,14 +82,14 @@ def _path_within(child: Path, parent: Path) -> bool:
 def is_cloud_path(path: Path) -> bool:
     """Best-effort cloud-sync path detection.
 
-    Plan §3.3.3 — this is **best-effort**.  A user who renames their Dropbox
+    Plan §3.3.3 - this is **best-effort**.  A user who renames their Dropbox
     folder defeats this check; the limitation is documented but explicit.
     """
     home = Path.home().resolve(strict=False)
     try:
         rel = path.resolve(strict=False).relative_to(home)
     except ValueError:
-        # Outside $HOME — we don't claim to know what's there.
+        # Outside $HOME - we don't claim to know what's there.
         return False
     parts = rel.parts
     head_one = parts[0] if parts else ""
@@ -102,7 +101,8 @@ def resolve_token_path(path: str | os.PathLike[str] | None) -> Path:
     """Resolve and validate a token-file path against the allow-list.
 
     Allow-list (plan §3.3.1):
-      1. ``$XDG_STATE_HOME`` (or its fallback ``~/.local/state``) sub-tree.
+      1. ``$XDG_STATE_HOME`` (or its fallback ``~/.local/state`` /
+         ``%LOCALAPPDATA%``) sub-tree.
       2. ``~/.config`` sub-tree.
 
     Rejections:
@@ -110,7 +110,7 @@ def resolve_token_path(path: str | os.PathLike[str] | None) -> Path:
       * Path strings containing ``..``.
       * Paths outside the two allow-listed roots.
 
-    Raises :class:`SchwabAuthError` on rejection — the caller (auth CLI or
+    Raises :class:`SchwabAuthError` on rejection - the caller (auth CLI or
     server start-up) is expected to surface the structured ``hint`` to the
     user verbatim.
     """
@@ -146,7 +146,7 @@ def resolve_token_path(path: str | os.PathLike[str] | None) -> Path:
             ),
         )
 
-    # Walk parent chain and reject any symlink — parents must be real dirs.
+    # Walk parent chain and reject any symlink - parents must be real dirs.
     # Note: ``resolve()`` already collapses symlinks, so this loop is mostly
     # belt-and-suspenders.  The branch is kept as a defensive depth check; it
     # rarely fires on a healthy POSIX filesystem.
@@ -176,7 +176,7 @@ class TokenState(str, Enum):
     """States returned by :func:`check_token_file_state`.
 
     The enum order mirrors the **mandatory check sequence** from plan
-    §3.2.2.1 — exists → perms → JSON parse — so any future maintainer can
+    §3.2.2.1 - exists → perms → JSON parse - so any future maintainer can
     simply iterate states for documentation purposes.
     """
 
@@ -187,7 +187,14 @@ class TokenState(str, Enum):
 
 
 def _file_mode(path: Path) -> int:
-    """Return only the permission bits of *path* (mask 0o7777)."""
+    """Return only the permission bits of *path* (mask 0o7777).
+
+    On Windows this returns ``0`` since NTFS ACLs do not map to POSIX bits;
+    callers must route through :func:`_platform.is_secure_perms` instead of
+    comparing the raw return value to ``0o600``.
+    """
+    if _platform.IS_WINDOWS:  # pragma: no cover - windows-only branch
+        return 0
     return stat.S_IMODE(path.lstat().st_mode)
 
 
@@ -206,13 +213,13 @@ def check_token_file_state(path: Path) -> tuple[TokenState, dict[str, object] | 
     if not path.exists():
         return TokenState.MISSING, None
 
-    # 2. Permissions — must be checked BEFORE json.load so a 0o644 attacker
-    #    file is not deserialized into memory.
-    actual_mode = _file_mode(path)
-    if actual_mode != TOKEN_FILE_MODE:
+    # 2. Permissions - must be checked BEFORE json.load so a 0o644 attacker
+    #    file is not deserialized into memory.  On Windows the shim uses
+    #    "exists & readable" semantics (see _platform.is_secure_perms).
+    if not _platform.is_secure_perms(path, TOKEN_FILE_MODE):
         return TokenState.INSECURE_PERMS, None
 
-    # 3. JSON parse — strict, no eval.
+    # 3. JSON parse - strict, no eval.
     try:
         with path.open("r", encoding="utf-8") as fh:
             parsed = json.load(fh)
@@ -228,9 +235,23 @@ def check_token_file_state(path: Path) -> tuple[TokenState, dict[str, object] | 
 def insecure_perms_hint(path: Path, actual_mode: int) -> str:
     """Render the user-facing repair hint for ``INSECURE_PERMS``.
 
-    Plan §3.3.2 — must always reference the *actual* path, never a hard-coded
+    Plan §3.3.2 - must always reference the *actual* path, never a hard-coded
     one (a user with ``--config-dir`` will have a different location).
+
+    On Windows the platform shim reports ``actual_mode == 0`` (POSIX bits are
+    meaningless on NTFS), so the hint is rephrased to point at the
+    ``%LOCALAPPDATA%`` ACL instead of ``chmod``.
     """
+    if actual_mode == 0:
+        return (
+            f"ERROR: token.json at {path} appears unreadable to the current user.\n"
+            "On Windows, ensure the file is under your user-profile %LOCALAPPDATA% "
+            "and not on a network share with restrictive ACLs.\n"
+            "On POSIX, the file should have mode 0o600 - run:\n"
+            f"  chmod 600 {path}\n"
+            f"  chmod 700 {path.parent}\n"
+            "Then restart the MCP server."
+        )
     return (
         f"ERROR: token.json has insecure permissions (got: {oct(actual_mode)}, required: 0o600).\n"
         "Run the following to fix and retry:\n"
@@ -245,19 +266,25 @@ def enforce_token_perms(path: Path) -> None:
 
     Raises :class:`SchwabAuthError` with reason ``insecure_token_perms`` if
     either is too permissive.  The hint contains the exact ``chmod`` command
-    a user can copy-paste.
+    a user can copy-paste (POSIX) or a Windows-specific message.
     """
     if not path.exists():
-        return  # nothing to enforce yet — caller handles MISSING separately
-    actual = _file_mode(path)
-    if actual != TOKEN_FILE_MODE:
+        return  # nothing to enforce yet - caller handles MISSING separately
+    if not _platform.is_secure_perms(path, TOKEN_FILE_MODE):
+        actual = _file_mode(path)
         raise SchwabAuthError(
             reason="insecure_token_perms",
             hint=insecure_perms_hint(path, actual),
         )
     parent = path.parent
-    parent_mode = _file_mode(parent)
-    if parent_mode != TOKEN_DIR_MODE:
+    if not _platform.is_secure_perms(parent, TOKEN_DIR_MODE):
+        parent_mode = _file_mode(parent)
+        if parent_mode == 0:
+            # Windows path - the shim reported the dir is unreadable, but
+            # since ``%LOCALAPPDATA%`` is the default state root we treat this
+            # as a noisy false-positive and skip raising.  Tier B (pywin32
+            # ACL inspection) is the proper fix.
+            return
         raise SchwabAuthError(
             reason="insecure_token_perms",
             hint=(
@@ -273,17 +300,17 @@ def ensure_secure_dir(parent: Path) -> None:
     """Create *parent* with ``0o700`` if missing and chmod-tighten if loose."""
     if not parent.exists():
         parent.mkdir(parents=True, mode=TOKEN_DIR_MODE, exist_ok=True)
-        # mkdir respects umask; explicitly chmod to be safe.
-        os.chmod(parent, TOKEN_DIR_MODE)
+        # mkdir respects umask; explicitly chmod to be safe.  On Windows the
+        # shim is a no-op since NTFS ACLs do not map to POSIX bits.
+        _platform.secure_chmod(parent, TOKEN_DIR_MODE)
         return
-    actual = _file_mode(parent)
-    if actual != TOKEN_DIR_MODE:
-        os.chmod(parent, TOKEN_DIR_MODE)
+    if not _platform.is_secure_perms(parent, TOKEN_DIR_MODE):
+        _platform.secure_chmod(parent, TOKEN_DIR_MODE)
 
 
 def secure_chmod(path: Path) -> None:
-    """Chmod *path* to ``0o600``."""
-    os.chmod(path, TOKEN_FILE_MODE)
+    """Chmod *path* to ``0o600`` (POSIX) / no-op + warning (Windows)."""
+    _platform.secure_chmod(path, TOKEN_FILE_MODE)
 
 
 # ---------------------------------------------------------------------------
@@ -293,30 +320,22 @@ def secure_chmod(path: Path) -> None:
 
 @contextlib.contextmanager
 def token_file_lock(token_path: Path) -> Iterator[None]:
-    """``fcntl.flock`` (LOCK_EX) on ``${token_path}.lock`` — POSIX only.
+    """Cross-platform exclusive lock on ``${token_path}.lock``.
 
-    Schwab refresh tokens rotate-on-use; two concurrent ``Cursor`` sessions
-    racing to refresh would result in ``invalid_grant`` for the loser.  This
-    context manager serializes refresh.
+    POSIX: ``fcntl.flock(LOCK_EX)``.
+    Windows: ``msvcrt.locking(LK_LOCK)`` on byte 0.
 
-    Plan §3.2.6 / §1 platform boundary — Windows native is **not** supported.
+    Plan §3.2.6 - serializes refresh-token rotation across processes.
+    Windows native is **experimental** (see ``docs/WINDOWS_PORTING.md``).
     """
-    if sys.platform == "win32":  # pragma: no cover - unsupported in v1
-        raise RuntimeError("token_file_lock requires POSIX (macOS/Linux only)")
-
     lock_path = token_path.with_suffix(token_path.suffix + ".lock")
     ensure_secure_dir(lock_path.parent)
-    # Use os.open with mode 0o600 to prevent any window where the file is
-    # group/world-readable.
     fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, TOKEN_FILE_MODE)
     try:
-        # In case the file existed with looser bits, tighten it.
-        os.fchmod(fd, TOKEN_FILE_MODE)
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        try:
+        # In case the file existed with looser bits, tighten it (POSIX).
+        _platform.secure_fchmod(fd, TOKEN_FILE_MODE)
+        with _platform.exclusive_file_lock(fd):
             yield
-        finally:
-            fcntl.flock(fd, fcntl.LOCK_UN)
     finally:
         os.close(fd)
 

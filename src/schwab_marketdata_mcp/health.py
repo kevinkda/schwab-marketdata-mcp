@@ -1,4 +1,4 @@
-"""Token-health probe CLI — invoked from cron / launchd.
+"""Token-health probe CLI - invoked from cron / launchd / Task Scheduler.
 
 Plan §3.4.1.  Run with ``python -m schwab_marketdata_mcp.health``.
 
@@ -13,7 +13,8 @@ Exit codes (plan §3.2.2.1 / §3.4.1):
 
 Side-effects:
     * Writes/overwrites ``~/Desktop/SCHWAB_REAUTH_NEEDED.md`` for any non-zero exit.
-    * Best-effort desktop notification (osascript on macOS, notify-send on Linux).
+    * Best-effort desktop notification via ``_platform.notify_desktop`` -
+      ``osascript`` (macOS) / ``notify-send`` (Linux) / plyer + PowerShell (Windows).
     * Truncates ``usage.jsonl`` to the rolling 30-day window.
     * Emits one line of structured JSON to stderr.
 """
@@ -23,13 +24,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shutil
-import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Final
 
+from . import _platform
 from .errors import SchwabAuthError, redact_secrets
 from .metrics import DEFAULT_RETENTION_DAYS, truncate_to_window, usage_path
 from .security import (
@@ -143,35 +143,12 @@ def _write_desktop_marker(message: str, *, hint: str = "") -> Path | None:
 
 
 def _notify(message: str) -> None:
-    """Fire a best-effort desktop notification — never raises."""
-    if sys.platform == "darwin":
-        osa = shutil.which("osascript")
-        if osa:
-            try:
-                subprocess.run(
-                    [
-                        osa,
-                        "-e",
-                        f'display notification "{message}" with title "Schwab MCP" sound name "Sosumi"',
-                    ],
-                    check=False,
-                    timeout=5,
-                )
-            except (OSError, subprocess.SubprocessError):
-                pass
-        return
-    if sys.platform.startswith("linux"):
-        ns = shutil.which("notify-send")
-        if ns:
-            try:
-                subprocess.run(
-                    [ns, "-u", "critical", "Schwab MCP", message],
-                    check=False,
-                    timeout=5,
-                )
-            except (OSError, subprocess.SubprocessError):
-                pass
-        return
+    """Fire a best-effort desktop notification - never raises.
+
+    Routes through :func:`_platform.notify_desktop` so Windows users get
+    plyer / PowerShell toasts in addition to the macOS / Linux paths.
+    """
+    _platform.notify_desktop("Schwab MCP", message)
 
 
 def _emit_stderr(record: dict[str, object]) -> None:
@@ -257,7 +234,7 @@ def run(token_path_arg: str | None = None) -> int:
         return HealthExit.MISSING
 
     if state is TokenState.INSECURE_PERMS:
-        actual = os.stat(token_path).st_mode & 0o7777
+        actual = _platform.file_mode(token_path)
         hint = insecure_perms_hint(token_path, actual)
         msg = human_summary(HealthExit.INSECURE_PERMS, None)
         _emit_stderr({"event": "health", "state": "insecure_perms", "actual_mode": oct(actual)})

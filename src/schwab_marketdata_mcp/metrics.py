@@ -22,6 +22,7 @@ from pathlib import Path
 from statistics import median
 from typing import Any, Final
 
+from . import _platform
 from .security import xdg_state_root
 
 USAGE_FILE_NAME: Final[str] = "usage.jsonl"
@@ -65,10 +66,10 @@ def record(
     try:
         target.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
         # Touch first so we can chmod before writing real content (defense in
-        # depth — avoids a window where the file is world-readable).
+        # depth - avoids a window where the file is world-readable on POSIX).
         if not target.exists():
             target.touch(mode=0o600, exist_ok=True)
-            os.chmod(target, 0o600)
+            _platform.secure_chmod(target, 0o600)
         with target.open("a", encoding="utf-8") as fh:
             fh.write(line + "\n")
     except OSError as exc:
@@ -141,9 +142,9 @@ def truncate_to_window(*, days: int = DEFAULT_RETENTION_DAYS, path: Path | None 
     with tmp.open("w", encoding="utf-8") as fh:
         for line in keep:
             fh.write(line + "\n")
-    os.chmod(tmp, 0o600)
+    _platform.secure_chmod(tmp, 0o600)
     os.replace(tmp, target)
-    os.chmod(target, 0o600)
+    _platform.secure_chmod(target, 0o600)
     return len(keep)
 
 
