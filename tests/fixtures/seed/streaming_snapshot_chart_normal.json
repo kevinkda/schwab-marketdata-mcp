@@ -1,0 +1,25 @@
+{
+  "service": "CHART_EQUITY",
+  "timestamp": 1716470400000,
+  "command": "SUBS",
+  "content": [
+    {
+      "key": "VOO",
+      "OPEN_PRICE": 685.0,
+      "HIGH_PRICE": 685.42,
+      "LOW_PRICE": 684.91,
+      "CLOSE_PRICE": 685.18,
+      "VOLUME": 12034,
+      "CHART_TIME_MILLIS": 1716470400000
+    },
+    {
+      "key": "QQQ",
+      "OPEN_PRICE": 510.42,
+      "HIGH_PRICE": 510.71,
+      "LOW_PRICE": 510.3,
+      "CLOSE_PRICE": 510.5,
+      "VOLUME": 9821,
+      "CHART_TIME_MILLIS": 1716470400000
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "service": "LEVELONE_EQUITIES",
+  "timestamp": 1716470400000,
+  "command": "SUBS",
+  "content": [
+    {
+      "key": "VOO",
+      "BID_PRICE": 685.0,
+      "ASK_PRICE": 685.19,
+      "LAST_PRICE": 685.18,
+      "TOTAL_VOLUME": 1234567
+    },
+    {
+      "key": "QQQ",
+      "BID_PRICE": 510.42,
+      "ASK_PRICE": 510.55,
+      "LAST_PRICE": 510.5,
+      "TOTAL_VOLUME": 9876543
+    }
+  ]
+}
