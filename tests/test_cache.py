@@ -372,3 +372,23 @@ async def test_call_endpoint_disabled_skips_cache(
     monkeypatch.setenv("SCHWAB_CACHE_ENABLED", "false")
     out = await server.get_quote(symbol="AAPL")
     assert out.get("_cache_status") == "disabled"
+
+
+async def test_get_cache_stats_tool(monkeypatch: pytest.MonkeyPatch, use_fake_backend: None) -> None:
+    del use_fake_backend
+    from schwab_marketdata_mcp import server
+
+    out = await server.get_cache_stats()
+    assert out["enabled"] is True
+    assert "rows_per_table" in out
+    assert "size_mb" in out
+
+
+async def test_health_check_includes_cache_fields(use_fake_backend: None) -> None:
+    del use_fake_backend
+    from schwab_marketdata_mcp import server
+
+    out = await server.health_check()
+    assert "cache_enabled" in out
+    assert "cache_size_mb" in out
+    assert "cache_hit_rate_24h" in out
