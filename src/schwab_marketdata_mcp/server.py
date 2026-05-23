@@ -145,6 +145,14 @@ mcp = FastMCP(
     ),
 )
 
+# FastMCP ctor (mcp SDK 1.27.x) does not expose a ``version=`` kwarg, so the
+# underlying lowlevel ``Server.version`` defaults to ``None`` and the
+# ``initialize`` response falls back to ``importlib.metadata.version("mcp")``
+# (the framework version, e.g. 1.27.1).  Inject the project release tag
+# directly on the lowlevel server so ``serverInfo.version`` reflects this
+# package's ``__version__`` (e.g. 0.3.0).
+mcp._mcp_server.version = SERVER_VERSION
+
 SUPPORTED_TOOLS: Final[list[str]] = supported_tool_names()
 
 

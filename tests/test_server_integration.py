@@ -184,3 +184,68 @@ def test_stdout_first_line_is_valid_jsonrpc(tmp_path: Path) -> None:
             except subprocess.TimeoutExpired:  # pragma: no cover - defensive
                 proc.kill()
                 proc.wait()
+
+
+def test_initialize_reports_release_tag_version(tmp_path: Path) -> None:
+    """``serverInfo.version`` must report the project's release tag
+    (``schwab_marketdata_mcp.__version__``), NOT the underlying mcp Python
+    SDK framework version (e.g. ``1.27.1``).
+
+    Regression test — FastMCP's ctor does not accept a ``version=`` kwarg,
+    so the lowlevel ``Server.version`` defaults to ``None`` and the server
+    falls back to ``importlib.metadata.version("mcp")``.  ``server.py``
+    must explicitly assign ``mcp._mcp_server.version = SERVER_VERSION``
+    so the ``initialize`` response carries the project tag.
+    """
+    from schwab_marketdata_mcp import __version__ as expected_version
+
+    env = {
+        **os.environ,
+        "SCHWAB_MOCK_BACKEND": "fixtures",
+        "SCHWAB_MOCK_FIXTURES_DIR": str(FIXTURES_DIR),
+        "SCHWAB_MOCK_SCENARIO": "normal",
+        "LOG_LEVEL": "WARNING",
+    }
+    for k in ("COV_CORE_SOURCE", "COV_CORE_CONFIG", "COV_CORE_DATAFILE", "COV_CORE_CONTEXT"):
+        env.pop(k, None)
+    env["COVERAGE_DISABLE"] = "1"
+    with subprocess.Popen(
+        [sys.executable, "-m", "schwab_marketdata_mcp.server"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+        cwd=str(REPO_ROOT),
+    ) as proc:
+        try:
+            init = {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "version-check", "version": "0"},
+                },
+            }
+            assert proc.stdin is not None
+            assert proc.stdout is not None
+            proc.stdin.write((json.dumps(init) + "\n").encode())
+            proc.stdin.flush()
+            first_line = proc.stdout.readline()
+            decoded = json.loads(first_line)
+            server_info = decoded["result"]["serverInfo"]
+            assert server_info["name"] == "schwab-marketdata-mcp"
+            assert server_info["version"] == expected_version, (
+                f"serverInfo.version={server_info['version']!r} should equal "
+                f"package __version__={expected_version!r}; if it equals the "
+                "mcp SDK version, the FastMCP._mcp_server.version override "
+                "in server.py was lost."
+            )
+        finally:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:  # pragma: no cover - defensive
+                proc.kill()
+                proc.wait()
