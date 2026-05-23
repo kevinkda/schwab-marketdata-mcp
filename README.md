@@ -10,8 +10,9 @@
 ![Release](https://img.shields.io/github/v/release/kevinkda/schwab-marketdata-mcp)
 
 Production-grade **Model Context Protocol (MCP)** server that exposes the
-Charles Schwab **Market Data Production** API as **12 tools** (10 endpoints + 2
-meta tools) for use inside Cursor, Claude Code, and any other MCP-aware agent.
+Charles Schwab **Market Data Production** API as **13 tools** (10 endpoints + 2
+meta tools + 1 experimental streaming snapshot tool) for use inside Cursor,
+Claude Code, and any other MCP-aware agent.
 
 > **Read-only** — this project calls only the Schwab Market Data API. It does
 > **NOT** call the Schwab Trader API and **does NOT** place orders. See
@@ -127,7 +128,7 @@ Claude Desktop), see [`docs/REGISTER.md`](docs/REGISTER.md).
   refuses to write Schwab data into a public repo (it calls
   `gh repo view --json isPrivate` first).
 
-### Tooling surface — 12 MCP tools
+### Tooling surface — 13 MCP tools
 
 At-a-glance map of name → endpoint:
 
@@ -145,6 +146,7 @@ At-a-glance map of name → endpoint:
 | 10 | `get_instrument_by_cusip`     | `GET /instruments/{cusip_id}`              |
 | 11 | `health_check`                | local — token age + recent error count     |
 | 12 | `get_server_info`             | local — versions + supported tool list     |
+| 13 | `get_streaming_snapshot` 🧪    | Streamer WebSocket — bounded snapshot      |
 
 Detailed per-tool reference is below.
 
@@ -280,8 +282,34 @@ Detailed per-tool reference is below.
 - **Input**: none.
 - **Returns**:
   `{server_version, mcp_sdk_version, schwab_py_version,
-  supported_tools: [...12 tool names], platform_supported_v1}`
+  supported_tools: [...13 tool names], platform_supported_v1}`
 - **Example**: `{}`
+
+#### Experimental — bounded streaming snapshot (1)
+
+##### `get_streaming_snapshot` 🧪 — bounded WebSocket snapshot
+
+- **When**: you need real-time bid/ask/last (sub-second freshness) or a
+  live 1-minute candle and the REST `get_quote` / `get_price_history`
+  freshness (delayed ~5–15 s) is not good enough. Tool opens a Schwab
+  Streamer WebSocket, collects messages for the requested duration,
+  then disconnects — fits the request-response semantics of MCP rather
+  than holding a long-running subscription.
+- **Input**: `symbols` (list[str], ≤ 20), `service`
+  (`LEVELONE_EQUITIES` for real-time bid/ask/last/volume **or**
+  `CHART_EQUITY` for real-time 1-minute candles),
+  `duration_ms?` (int, default 2000, hard-bounded 500 – 10000).
+- **Returns**:
+  `{service, symbols_requested, symbols_received, duration_ms,
+  messages_count, snapshots: {sym: [{ts, bid|open, ask|high, ...}, ...]},
+  metadata: {first_message_at, last_message_at, connection_duration_ms}}`
+- **Example**:
+  `{"symbols": ["VOO", "QQQ"], "service": "LEVELONE_EQUITIES",
+  "duration_ms": 2000}`
+- **Caveats**: Each call opens, authenticates, subscribes, and closes a
+  WebSocket — ~300–500 ms of overhead per call. Use sparingly. For
+  long-running subscriptions, a dedicated streaming MCP server is on
+  the v0.3+ roadmap (see plan §10).
 
 > See [`schwab-marketdata-skill`](https://github.com/kevinkda/schwab-marketdata-skill)
 > for full input / output schemas, edge cases, retry semantics, and
@@ -315,8 +343,8 @@ Supported granularity matrix (Schwab Market Data API limits):
 | `YEAR_TO_DATE` | `DAILY` / `WEEKLY`                | year-to-date        |
 
 > Sub-minute candles (seconds, ticks) are not provided by the Schwab Market
-> Data API. For real-time minute candles, see the Streaming snapshot tool
-> (v0.2 P1 candidate).
+> Data API. For real-time minute candles, use the experimental
+> `get_streaming_snapshot` tool with `service="CHART_EQUITY"`.
 
 #### What the Schwab Market Data API does NOT provide
 
