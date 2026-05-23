@@ -123,6 +123,7 @@ def test_build_auth_config_outside_allow_list_rejected(tmp_path: Path, monkeypat
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.posix_only
 def test_atomic_write_creates_dir_and_file(tmp_path: Path) -> None:
     p = tmp_path / "deep" / "nest" / "token.json"
     atomic_write_token(p, {"creation_timestamp": 1700000000, "token": {"x": 1}})
@@ -153,6 +154,7 @@ def test_make_token_write_func_round_trip(tmp_path: Path) -> None:
     assert json.loads(p.read_text()) == {"a": 1}
 
 
+@pytest.mark.posix_only
 def test_atomic_write_resets_umask_even_on_failure(tmp_path: Path) -> None:
     """OWASP A02 / A05 — umask must be restored after a failed write."""
     old = os.umask(0o022)

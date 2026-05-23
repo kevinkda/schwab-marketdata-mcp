@@ -108,6 +108,7 @@ def test_run_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     assert code == health.HealthExit.MISSING
 
 
+@pytest.mark.posix_only
 def test_run_insecure_perms(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     pdir = _setup_state_dir(monkeypatch, tmp_path)
     f = pdir / "token.json"
@@ -170,6 +171,7 @@ def test_run_classifies_warn_24h(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     assert code == health.HealthExit.EXPIRES_24H
 
 
+@pytest.mark.posix_only
 def test_run_perms_drift_after_state_check(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """If state machine returns VALID but enforce_token_perms detects parent drift."""
     pdir = _setup_state_dir(monkeypatch, tmp_path)

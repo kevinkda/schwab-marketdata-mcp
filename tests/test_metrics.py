@@ -14,6 +14,7 @@ import pytest
 from schwab_marketdata_mcp import metrics
 
 
+@pytest.mark.posix_only
 def test_record_creates_file_with_secure_perms(tmp_path: Path) -> None:
     p = tmp_path / "u.jsonl"
     metrics.record(tool="get_quote", status="ok", error_class=None, latency_ms=10, path=p)
