@@ -1,4 +1,4 @@
-"""Tool implementations for the 12 outward-facing MCP tools."""
+"""Tool implementations for the 13 outward-facing MCP tools."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from . import (
     options,
     price_history,
     quotes,
+    streaming,
 )
 
 __all__ = [
@@ -20,4 +21,5 @@ __all__ = [
     "options",
     "price_history",
     "quotes",
+    "streaming",
 ]

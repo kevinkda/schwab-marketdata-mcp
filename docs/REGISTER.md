@@ -400,3 +400,28 @@ If you must use `login_flow` (e.g. headless setup, scripted onboarding):
    5. Copy the **entire URL** from the address bar.
    6. Paste it back into the CLI prompt and press Enter.
    7. Token is written.
+
+---
+
+## 6.  Data coverage limits
+
+This server exposes **read-only** Schwab Market Data Production endpoints
+only.  Two clarifications that matter when integrators size up the
+project:
+
+- **`get_price_history` is the candlestick / kline endpoint.**  If you
+  need OHLCV bars (candles, klines, candlesticks), use this tool — see
+  the supported `period_type` × `frequency_type` × `frequency` matrix
+  and lookback limits under
+  [README → "Data coverage clarifications"](../README.md#data-coverage-clarifications)
+  ([中文](../README_zh.md#数据覆盖澄清)).
+- **What this server does NOT cover.**  Time & sales (tick-level
+  trades), Level 2 historical snapshots, fundamental / earnings time
+  series, and news / SEC filings are **architecturally unavailable**
+  through the Schwab Market Data API.  The same README section lists
+  recommended third-party providers (Polygon.io, Tiingo, Alpaca,
+  Databento, FMP, SEC EDGAR) for each missing data class.
+- **Trader API endpoints** (account, orders, transactions, positions)
+  are explicitly out of scope per §1 of this document — this server
+  is **read-only Market Data only**.  See plan §1 / §10 for the
+  rationale.

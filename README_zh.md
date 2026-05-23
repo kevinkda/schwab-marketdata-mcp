@@ -2,10 +2,12 @@
 
 [English](./README.md) | [简体中文](./README_zh.md)
 
-[![Status](https://img.shields.io/badge/status-alpha-orange.svg)](./README.md)
-[![Python](https://img.shields.io/badge/python-%3E%3D3.11-blue.svg)](#运行环境要求)
-[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)](#运行环境要求)
-[![License](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
+![Tests](https://img.shields.io/github/actions/workflow/status/kevinkda/schwab-marketdata-mcp/test.yml?branch=main&label=tests)
+![Coverage](https://img.shields.io/badge/coverage-94.92%25-brightgreen)
+![License](https://img.shields.io/github/license/kevinkda/schwab-marketdata-mcp)
+![Python](https://img.shields.io/badge/python-3.11+-blue)
+![Status](https://img.shields.io/badge/status-alpha-orange)
+![Release](https://img.shields.io/github/v/release/kevinkda/schwab-marketdata-mcp)
 
 生产级 **Model Context Protocol（MCP）** 服务端，把 Charles Schwab 的
 **Market Data Production** API 封装为 **12 个 tool**（10 个 endpoint + 2 个元
@@ -278,6 +280,53 @@ uv run pytest --cov                              # 整体 ≥85%，关键模块 
 
 > 完整入参 / 出参 schema、边界情况、重试语义与端到端 playbook 见配套
 > skill 仓库 [`schwab-marketdata-skill`](https://github.com/kevinkda/schwab-marketdata-skill)。
+
+### 数据覆盖澄清
+
+#### `get_price_history` 就是 K 线 / candlestick 接口
+
+如果你在找 OHLCV bar（K 线 / candle / kline / candlestick），`get_price_history`
+就是对应的 tool。返回结构如下：
+
+```json
+{
+  "candles": [
+    {"open": 432.10, "high": 432.55, "low": 431.92, "close": 432.40, "volume": 12034, "datetime": 1716470400000},
+    {"open": 432.40, "high": 432.62, "low": 432.18, "close": 432.50, "volume":  9821, "datetime": 1716470700000}
+  ],
+  "symbol": "VOO",
+  "empty": false
+}
+```
+
+支持的粒度矩阵（Schwab Market Data API 限制）：
+
+| period_type | 合法 `frequency_type` × `frequency` | 可回溯历史区间 |
+|-------------|-------------------------------------|---------------|
+| `DAY`       | `MINUTE` × {1, 5, 10, 15, 30}       | ~48 天（1 分钟）、~9 个月（5–30 分钟） |
+| `MONTH`     | `DAILY` / `WEEKLY`                  | 最多 6 个月 |
+| `YEAR`      | `DAILY` / `WEEKLY` / `MONTHLY`      | **最多 20 年** |
+| `YEAR_TO_DATE` | `DAILY` / `WEEKLY`               | 年初至今 |
+
+> Schwab Market Data API **不提供**亚分钟级 K 线（秒级、tick 级）。如需
+> 实时分钟级 K 线，请关注后续 Streaming snapshot tool（v0.2 P1 候选）。
+
+#### Schwab Market Data API **不提供**的数据类型
+
+以下数据在 Schwab Market Data Production API 上**架构性不可用**，需要第
+三方数据源补齐：
+
+| 数据类型 | 状态 | 推荐第三方 |
+|---------|------|-----------|
+| Time & sales / tape（逐笔成交） | 自 Schwab 2024 年 API 迁移移除 `TIMESALE_*` services 之后，REST 与 Streaming 都没有 | [Polygon.io `/v3/trades/{ticker}`](https://polygon.io/docs/stocks/get_v3_trades__ticker)（全市场 SIP，~$199/mo）；[Tiingo IEX](https://api.tiingo.com/documentation/iex)（$10/mo，仅 IEX）；[Alpaca tick API](https://docs.alpaca.markets/reference/stocktrades)（免费档 + $99/mo SIP 档） |
+| Tick-by-tick history（逐笔历史） | Schwab API 不提供 | 同上 |
+| Level 2 历史快照（NYSE Book / NASDAQ Book replay） | 仅 Streaming，REST 无历史回放 | Polygon.io / Databento |
+| 基本面 / 财报时间序列（EPS 历史、营收历史等） | `quotes` 带 FUNDAMENTAL 字段但**没有**对应历史接口 | [FMP](https://financialmodelingprep.com/)、[Tiingo](https://api.tiingo.com/)、[Polygon.io fundamentals](https://polygon.io/docs/stocks/financials) |
+| 新闻 / SEC 文件 | Market Data API 不提供 | [Polygon.io news](https://polygon.io/docs/stocks/get_v2_reference_news)、[SEC EDGAR](https://www.sec.gov/edgar) |
+
+**Trader API 端点**（账户、订单、成交、持仓）按 [`docs/REGISTER.md`](docs/REGISTER.md)
+显式排除在范围之外 —— 本服务**只读 Market Data**。背景理由见 plan
+§1 / §10。
 
 ---
 
