@@ -52,6 +52,28 @@ ANY_SYMBOL_RE: Final[re.Pattern[str]] = re.compile(
 # stdio JSON-RPC frame budget.
 MAX_SYMBOLS_PER_BATCH: Final[int] = 50
 
+# ---------------------------------------------------------------------------
+# Streaming snapshot constants (Plan §10 follow-up — bounded streaming model).
+# ---------------------------------------------------------------------------
+
+#: Cap on the symbol list for ``get_streaming_snapshot``.  Smaller than the
+#: REST batch cap because each symbol expands into many websocket messages
+#: and we want a tight upper-bound on connection-lifetime memory.
+MAX_STREAMING_SNAPSHOT_SYMBOLS: Final[int] = 20
+
+#: Lower bound for the bounded-snapshot duration.  Below 500 ms the round
+#: trip for login / subscribe / first message will rarely complete.
+MIN_STREAMING_SNAPSHOT_DURATION_MS: Final[int] = 500
+
+#: Upper bound — keeps the tool call inside MCP request-response semantics
+#: (most clients have a 30-second tool timeout; we leave generous headroom).
+MAX_STREAMING_SNAPSHOT_DURATION_MS: Final[int] = 10_000
+
+#: Default duration when the caller omits ``duration_ms``.
+DEFAULT_STREAMING_SNAPSHOT_DURATION_MS: Final[int] = 2_000
+
+StreamingService = Literal["LEVELONE_EQUITIES", "CHART_EQUITY"]
+
 
 # ---------------------------------------------------------------------------
 # Re-exported schwab-py enums (Plan §3.2 / §3.1)
@@ -442,6 +464,44 @@ class GetServerInfoInput(_BaseInput):
     """No input — kept for schema parity in `list_tools`."""
 
 
+class GetStreamingSnapshotInput(_BaseInput):
+    """Bounded WebSocket snapshot via ``StreamerClient`` (plan §10 follow-up).
+
+    Opens a Schwab Streamer connection, collects messages for
+    ``duration_ms`` (default 2 s, hard-bounded 500 ms - 10 s), then closes.
+    Deliberately fits the request-response semantics of MCP rather than
+    holding a long-running subscription open across tool calls — the
+    long-running model is reserved for a dedicated streaming MCP server
+    in v0.3+.
+    """
+
+    symbols: list[StockSymbol] = Field(
+        min_length=1,
+        max_length=MAX_STREAMING_SNAPSHOT_SYMBOLS,
+    )
+    service: StreamingService
+    duration_ms: int | None = None
+
+    @model_validator(mode="after")
+    def _check_duration(self) -> GetStreamingSnapshotInput:
+        from .errors import SchwabValidationError
+
+        # symbol regex is already enforced by ``StockSymbol``; we only need
+        # to police the duration window because Pydantic's ``Field`` does
+        # not gracefully express "either None or a bounded int".
+        d = self.duration_ms if self.duration_ms is not None else DEFAULT_STREAMING_SNAPSHOT_DURATION_MS
+        if not (MIN_STREAMING_SNAPSHOT_DURATION_MS <= d <= MAX_STREAMING_SNAPSHOT_DURATION_MS):
+            raise SchwabValidationError(
+                field="duration_ms",
+                reason=(
+                    f"duration_ms must be in "
+                    f"[{MIN_STREAMING_SNAPSHOT_DURATION_MS}, "
+                    f"{MAX_STREAMING_SNAPSHOT_DURATION_MS}]; got {d}"
+                ),
+            )
+        return self
+
+
 # ---------------------------------------------------------------------------
 # Discriminator-free public API
 # ---------------------------------------------------------------------------
@@ -461,11 +521,12 @@ TOOL_INPUT_MODELS: Final[dict[str, type[_BaseInput]]] = {
     "get_instrument_by_cusip": GetInstrumentByCusipInput,
     "health_check": HealthCheckInput,
     "get_server_info": GetServerInfoInput,
+    "get_streaming_snapshot": GetStreamingSnapshotInput,
 }
 
 
 def supported_tool_names() -> list[str]:
-    """Return all 12 tool names in deterministic order."""
+    """Return all 13 tool names in deterministic order."""
     return list(TOOL_INPUT_MODELS.keys())
 
 
@@ -492,8 +553,12 @@ def validate_tool_input(tool_name: str, raw: dict[str, Any]) -> _BaseInput:
 __all__ = [
     "ANY_SYMBOL_RE",
     "CUSIP_RE",
+    "DEFAULT_STREAMING_SNAPSHOT_DURATION_MS",
     "INDEX_SYMBOL_RE",
+    "MAX_STREAMING_SNAPSHOT_DURATION_MS",
+    "MAX_STREAMING_SNAPSHOT_SYMBOLS",
     "MAX_SYMBOLS_PER_BATCH",
+    "MIN_STREAMING_SNAPSHOT_DURATION_MS",
     "OSI_OPTION_RE",
     "STOCK_SYMBOL_RE",
     "TOOL_INPUT_MODELS",
@@ -511,6 +576,7 @@ __all__ = [
     "GetQuoteInput",
     "GetQuotesInput",
     "GetServerInfoInput",
+    "GetStreamingSnapshotInput",
     "HealthCheckInput",
     "IndexSymbol",
     "InstrumentProjection",
@@ -530,6 +596,7 @@ __all__ = [
     "QuoteFields",
     "SearchInstrumentsInput",
     "StockSymbol",
+    "StreamingService",
     "supported_tool_names",
     "validate_tool_input",
 ]
