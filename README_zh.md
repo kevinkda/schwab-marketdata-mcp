@@ -4,7 +4,7 @@
 
 [![Status](https://img.shields.io/badge/status-alpha-orange.svg)](./README.md)
 [![Python](https://img.shields.io/badge/python-%3E%3D3.11-blue.svg)](#运行环境要求)
-[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey.svg)](#运行环境要求)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)](#运行环境要求)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
 
 生产级 **Model Context Protocol（MCP）** 服务端，把 Charles Schwab 的
@@ -124,6 +124,8 @@ uv run pytest --cov                              # 整体 ≥85%，关键模块 
 
 ### 工具面 —— 12 个 MCP tool
 
+名字 → endpoint 速查表：
+
 | #  | Tool                          | Endpoint                                   |
 | -- | ----------------------------- | ------------------------------------------ |
 | 1  | `get_quote`                   | `GET /{symbol_id}/quotes`                  |
@@ -139,6 +141,144 @@ uv run pytest --cov                              # 整体 ≥85%，关键模块 
 | 11 | `health_check`                | 本地 —— token 寿命 + 最近错误数            |
 | 12 | `get_server_info`             | 本地 —— 版本号 + 支持的 tool 列表          |
 
+每个 tool 的详细说明见下文。
+
+#### 业务 tool（10 个）—— Schwab Market Data Production endpoint
+
+##### `get_quote` —— 单只标的实时报价
+
+- **何时用**：只要拉一只标的当前 bid / ask / last；快速看 P&L 或单点
+  决策，不批量。
+- **入参**：`symbol`（str，可为股票、ETF、指数 `$XYZ` 或 OSI 期权代码），
+  `fields?`（字段组列表，例如 `["quote", "fundamental"]`）。
+- **返回**：
+  `{<symbol>: {quote: {bidPrice, askPrice, lastPrice, totalVolume, ...},
+  fundamental: {...}, reference: {...}}}`
+- **示例**：`{"symbol": "VOO"}`
+
+##### `get_quotes` —— 批量查询（≤ 50 只）
+
+- **何时用**：watchlist 月度/每日刷新、portfolio 整体扫描、ETF / 个股
+  对比；一次 HTTP 替代 N 次。
+- **入参**：`symbols`（list[str]，长度 ≤ 50），`fields?`，
+  `indicative?`（bool，是否包含指数的指示性报价）。
+- **返回**：`{<sym1>: {quote: {...}, fundamental: {...}}, <sym2>: {...}, ...}`
+- **示例**：`{"symbols": ["VOO", "QQQ", "SPY"]}`
+
+##### `get_price_history` —— 历史 K 线 / OHLC
+
+- **何时用**：技术分析、回测、画图、计算 SMA / RSI / ATR 等窗口型指标。
+- **入参**：`symbol`、`period_type`（`DAY` / `MONTH` / `YEAR` / `YTD`）、
+  `period`、`frequency_type`（`MINUTE` / `DAILY` / `WEEKLY` / `MONTHLY`）、
+  `frequency`。Pydantic 会预校验合法的笛卡尔积组合。
+- **返回**：
+  `{candles: [{open, high, low, close, volume, datetime}, ...], symbol, empty}`
+- **示例**：
+  `{"symbol": "VOO", "period_type": "DAY", "period": "FIVE_DAYS",
+  "frequency_type": "MINUTE", "frequency": "EVERY_FIVE_MINUTES"}`
+
+##### `get_option_chain` —— 期权链快照（含 Greeks）
+
+- **何时用**：期权研究、IV-rank 分析、covered-call / cash-secured-put
+  行权价选择、垂直价差建模。
+- **入参**：`symbol` 必填，可选项十余个 ——
+  `contract_type?`（`CALL` / `PUT` / `ALL`）、`strike_count?`、
+  `from_date?`、`to_date?`、`strategy?`、`range?`、`volatility?`、
+  `interest_rate?`、`days_to_expiration?` 等。
+- **返回**：
+  `{status, callExpDateMap: {...}, putExpDateMap: {...},
+  underlying: {...}, numberOfContracts}`
+- **示例**：`{"symbol": "VOO", "strike_count": 3, "contract_type": "ALL"}`
+
+##### `get_option_expiration_chain` —— 可用到期日列表
+
+- **何时用**：调 `get_option_chain` 之前的预查询；判断 weekly / monthly /
+  LEAPS 是否可用。
+- **入参**：`symbol`。
+- **返回**：
+  `{expirationList: [{expirationDate, daysToExpiration, expirationType,
+  settlementType}, ...]}`
+- **示例**：`{"symbol": "VOO"}`
+
+##### `get_market_hours` —— 多市场交易时段
+
+- **何时用**：盘前 / 盘后判断市场是否交易；跨市场 dashboard；启动批量
+  扫描前的预检。
+- **入参**：`markets`（list[str]，可选 `EQUITY` / `OPTION` / `BOND` /
+  `FUTURE` / `FOREX`），`date?`（`YYYY-MM-DD`，默认今天）。
+- **返回**：
+  `{<market>: {<product>: {date, marketType, isOpen, sessionHours: {...}}}}`
+- **示例**：`{"markets": ["EQUITY", "OPTION"]}`
+
+##### `get_market_hour_single` —— 单市场交易时段
+
+- **何时用**：与 `get_market_hours` 意图一致，但只查一个市场 —— 响应
+  更小，路径参数版。
+- **入参**：`market_id`（`EQUITY` / `OPTION` / `BOND` / `FUTURE` /
+  `FOREX`），`date?`。
+- **返回**：与 `get_market_hours` 同结构，但仅一个市场。
+- **示例**：`{"market_id": "EQUITY"}`
+
+##### `get_movers` —— 指数成分涨跌幅榜
+
+- **何时用**：盘中 / 盘后判断市场情绪；找 `$SPX` / `$DJI` / `$COMPX` /
+  NYSE / NASDAQ 的异动股。
+- **入参**：`index`（`$SPX` / `$DJI` / `$COMPX` / `NYSE` / `NASDAQ` /
+  `OTCBB` / `INDEX_ALL` / `EQUITY_ALL` / `OPTION_ALL` / `OPTION_PUT` /
+  `OPTION_CALL`），`sort?`、`frequency?`。
+- **返回**：
+  `{screeners: [{symbol, description, lastPrice, netChange,
+  netPercentChange, volume, ...}, ...]}`
+- **示例**：`{"index": "$SPX"}`
+
+##### `search_instruments` —— 模糊搜索 / 拉 fundamental
+
+- **何时用**：把用户输入（`"AAPL"`、`"Apple"`）解析成标准 instrument；
+  批量校验 ticker 合法性；拉 fundamental（PE、市值、股息率等）。
+- **入参**：`symbols`（list[str]），`projection`
+  （`SYMBOL_SEARCH` / `SYMBOL_REGEX` / `DESC_SEARCH` / `DESC_REGEX` /
+  `SEARCH` / `FUNDAMENTAL`）。
+- **返回**：
+  `{instruments: [{symbol, description, exchange, assetType,
+  fundamental?: {...}}, ...]}`
+- **示例**：`{"symbols": ["VOO"], "projection": "FUNDAMENTAL"}`
+
+##### `get_instrument_by_cusip` —— CUSIP 反查 instrument
+
+- **何时用**：从券商对账单 / SEC filing 拿到 9 位 CUSIP，反查对应的
+  ticker / 描述。
+- **入参**：`cusip`（str，9 字符，需匹配 `^[A-Z0-9]{9}$`）。
+- **返回**：单个 instrument dict
+  `{symbol, description, exchange, assetType, ...}`。
+- **示例**：`{"cusip": "922908363"}`（VOO）
+
+#### Meta tool（2 个）—— 本地调用，不消耗 Schwab API 配额
+
+##### `health_check` —— token / 限流 / 近 24 h 错误自检
+
+- **何时用**：MCP 启动后第一个调；判断"是否需要重新授权"前；cron /
+  launchd 周期巡检（≥ 4 h 一次足矣）。
+- **入参**：无。
+- **返回**：
+  `{server_version, token_state（VALID / MISSING / INSECURE_PERMS /
+  MALFORMED）, token_age_days, token_expires_in_days,
+  last_request_status, rate_limit_remaining_per_min,
+  recent_error_count_24h, platform_supported}`
+- **示例**：`{}`
+
+##### `get_server_info` —— 版本握手 + capability discovery
+
+- **何时用**：skill 激活时（校验 `compatible_mcp_version`）；首次注册
+  到新客户端；调试 / bug report。
+- **入参**：无。
+- **返回**：
+  `{server_version, mcp_sdk_version, schwab_py_version,
+  supported_tools: [...12 个 tool 名], platform_supported_v1}`
+- **示例**：`{}`
+
+> 完整入参 / 出参 schema、边界情况、重试语义与端到端 playbook 见配套
+> skill 仓库 [`schwab-marketdata-skill`](https://github.com/kevinkda/schwab-marketdata-skill)。
+
 ---
 
 ## 运行环境要求
@@ -147,19 +287,54 @@ uv run pytest --cov                              # 整体 ≥85%，关键模块 
 | ---- | ---- | ---- |
 | Python | `>=3.11` | 类型注解使用 PEP 695 语法。 |
 | `uv`   | `>=0.4` | 用于环境管理与 lockfile 锁定的安装。 |
-| 操作系统 | macOS 11+ / Linux / WSL2 | 跨进程 token 锁依赖 `fcntl.flock`。 |
+| 操作系统 | macOS 11+ / Linux / WSL2 / Windows 10/11 原生（Tier A） | POSIX 用 `fcntl.flock`，Windows 用 `msvcrt.locking`。详见 [`docs/WINDOWS_PORTING.md`](docs/WINDOWS_PORTING.md)。 |
+| CPU 架构 | `x86_64` / `arm64` | Intel Mac（Mac Pro 2019、MacBook Pro 2019）与 Apple Silicon（M1/M2/M3/M4）均原生支持，无需 Rosetta 2；Linux `aarch64`（Graviton、树莓派 5）同样可用。 |
 | Schwab Developer 账号 | — | 必须自行在 <https://developer.schwab.com/dashboard/apps> 注册应用。 |
 
 ### 平台支持
 
-|              | macOS 11+ | Linux | WSL2（Linux 子系统） | Windows 原生 |
-| ------------ | :-------: | :---: | :------------------: | :----------: |
-| **v1（当前）** |     ✅    |   ✅  |   ✅（避开 `/mnt/c`） |       ❌      |
-| **v2（待定）** |     ✅    |   ✅  |          ✅           | ⏳（计划：`msvcrt.locking`） |
+|              | macOS 11+（Intel x86_64） | macOS 11+（Apple Silicon arm64） | Linux x86_64 | Linux arm64 | WSL2（Linux 子系统） | Windows 10/11 原生 |
+| ------------ | :----------------------: | :------------------------------: | :----------: | :---------: | :------------------: | :----------------: |
+| **v1（当前）** |            ✅            |                ✅                |      ✅      |      ✅     |  ✅（避开 `/mnt/c`） |   🧪 实验性（Tier A） |
 
-Windows 原生支持需要把 `fcntl.flock` 替换为 `msvcrt.locking`，已列入 v2
-路线图。WSL2 当前可用，但请将仓库放在 Linux 文件系统上（避开 `/mnt/c`，
-那里 `flock` 行为不稳定）。
+Windows 原生当前为 **Tier A best-effort（实验性）**：跨进程 token 锁改用
+`msvcrt.locking`，文件权限不再依赖 POSIX `0o600`，而是依赖 `%LOCALAPPDATA%`
+默认继承的 NTFS ACL。如需更友好的桌面提示，可安装 Windows 可选依赖：
+
+```powershell
+pip install schwab-marketdata-mcp[windows]
+# 或者 uv:
+uv sync --extra dev --extra windows
+```
+
+详见 [`docs/WINDOWS_PORTING.md`](docs/WINDOWS_PORTING.md) 中列出的 caveat
+清单。Tier B（基于 `pywin32` 的生产级 ACL + `windows-latest` CI matrix）
+已列入路线图。
+
+所有带 native 扩展的依赖（`cryptography`、`pydantic-core`、`websockets`、
+`cffi`、`pyyaml`、`markupsafe`、`msgpack`、`rpds-py`）在 PyPI 上都同时
+提供 `macosx_*_x86_64`（或 `universal2`）与 `macosx_*_arm64` 双 wheel，
+因此 `uv sync --extra dev` 在任一架构上都会解析到原生二进制，
+不会触发宿主机的 C/Rust 工具链编译。其余运行时依赖（`mcp`、`schwab-py`、
+`httpx`、`httpcore`、`h11`、`anyio`、`pydantic`、`httpx-sse`、`joserfc`）
+均为纯 Python（`py3-none-any`），与 CPU 架构无关。
+
+服务端代码本身只使用架构无关的抽象（`pathlib.Path`、`os.replace`），
+平台相关的 primitive 全部走 `_platform` shim：POSIX 走 `fcntl.flock` /
+`os.chmod` / `os.umask`，Windows 走 `msvcrt.locking` / NTFS ACL 继承。
+因此 Intel Mac 与 Apple Silicon Mac 上的行为字节级一致。
+
+Windows 原生为 Tier A（实验性）：文件锁使用 `msvcrt.locking`，POSIX
+`0o600` 权限位在 NTFS 上是 best-effort no-op，依赖用户的 `%LOCALAPPDATA%`
+NTFS ACL 默认值。Tier B（基于 `pywin32` 的生产级 ACL + Windows CI matrix）
+已列入路线图。WSL2 当前可用，但请将仓库放在 Linux 文件系统上（避开
+`/mnt/c`，那里 `flock` 行为不稳定）。
+
+> **CI 覆盖说明** —— 当前 `test.yml` 的 matrix 仅跑 `macos-latest`
+> （= `macos-14`，arm64）与 `ubuntu-latest`（x86_64），尚未覆盖 Intel
+> macOS x86_64（`macos-13`）。如果你的部署依赖 Intel Mac 兼容性，建议
+> 在 Mac Pro / Intel MacBook 本地执行 `uv sync --extra dev && uv run
+> pytest --cov` 验证，或提交 PR 把 `macos-13` 加入 runner matrix。
 
 ---
 
@@ -261,7 +436,7 @@ uv run pytest --cov --cov-report=html  # 输出到 htmlcov/
 
 ---
 
-## 健康检查（cron / launchd）
+## 健康检查（cron / launchd / Task Scheduler）
 
 ```bash
 uv run python -m schwab_marketdata_mcp.health
@@ -271,10 +446,13 @@ uv run python -m schwab_marketdata_mcp.health
 
 参考 [`docs/cron.example`](docs/cron.example)，里面有可直接粘贴的
 **launchd plist**（周日 20:00 + 周三 21:00 + 每 4 小时一次的 fallback，
-覆盖合盖待机场景）以及 **crontab** 片段。
+覆盖合盖待机场景）以及 **crontab** 片段。Windows 用户请看同一文件的
+"Windows native (Task Scheduler)" 段落，里面有对应的
+`Register-ScheduledTask` PowerShell 脚本。
 
-安装完成后跑一次 `bash scripts/notifier-self-test.sh`，确认
-`osascript`（macOS）或 `notify-send`（Linux）能正常弹通知。
+安装完成后跑一次 `bash scripts/notifier-self-test.sh`（POSIX）或
+`pwsh scripts/notifier-self-test.ps1`（Windows），确认
+`osascript` / `notify-send` / Windows toast 能正常弹通知。
 
 ---
 
