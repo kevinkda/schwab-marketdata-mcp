@@ -1,6 +1,6 @@
 [project]
 name = "schwab-marketdata-mcp"
-version = "0.2.0"
+version = "0.3.0"
 description = "MCP server exposing 12 tools for Schwab Market Data Production API (10 endpoints + health_check + get_server_info)."
 readme = "README.md"
 requires-python = ">=3.11"
