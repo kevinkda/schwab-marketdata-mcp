@@ -76,6 +76,16 @@ RECENT_CANDLE_BOUNDARY_S: Final[int] = 3600  # candles within last hour are "rec
 DEFAULT_TTL_OPTION_CHAIN_S: Final[int] = 300
 DEFAULT_TTL_INSTRUMENTS_S: Final[int] = 86_400
 
+# v0.4 P1/C — IV percentile materialisation.
+# DTE buckets used by ``aggregate_atm_iv`` / ``get_iv_percentile_rank``.
+# Stored as VARCHAR ('30d' / '60d' / '90d') so future buckets (e.g. '180d')
+# can be added without an ALTER TABLE.
+IV_BUCKET_30D_DAYS: Final[int] = 30
+IV_BUCKET_60D_DAYS: Final[int] = 60
+IV_BUCKET_90D_DAYS: Final[int] = 90
+IV_BUCKET_TOLERANCE_DAYS: Final[int] = 7  # how close DTE must be to bucket centre
+DEFAULT_IV_LOOKBACK_DAYS: Final[int] = 252  # ~1 trading year
+
 CACHE_DB_FILENAME: Final[str] = "cache.duckdb"
 CACHE_DIR_NAME: Final[str] = "schwab-marketdata-mcp"
 
@@ -164,6 +174,51 @@ _SCHEMA_DDL: Final[tuple[str, ...]] = (
         kind VARCHAR,
         table_name VARCHAR
     )
+    """,
+    # ----- v0.4 P1/C — structured option chain snapshot + IV history -----
+    # Distinct from ``option_chain_cache`` (which is the legacy raw JSON
+    # response cache keyed by query-hash).  ``option_chain_snapshots`` is
+    # row-normalised so we can compute analytics (ATM IV, Greeks
+    # distributions, etc.) directly with SQL.
+    """
+    CREATE TABLE IF NOT EXISTS option_chain_snapshots (
+        underlying VARCHAR NOT NULL,
+        snapshot_at TIMESTAMP NOT NULL,
+        expiry DATE NOT NULL,
+        strike DECIMAL(18,4) NOT NULL,
+        call_put VARCHAR(4) NOT NULL,
+        last_price DECIMAL(18,4),
+        bid DECIMAL(18,4),
+        ask DECIMAL(18,4),
+        volume BIGINT,
+        open_interest BIGINT,
+        implied_vol DECIMAL(8,6),
+        delta DECIMAL(8,6),
+        gamma DECIMAL(8,6),
+        theta DECIMAL(8,6),
+        vega DECIMAL(8,6),
+        rho DECIMAL(8,6),
+        raw_json JSON,
+        PRIMARY KEY (underlying, snapshot_at, expiry, strike, call_put)
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_option_chain_snapshots_underlying_time
+        ON option_chain_snapshots(underlying, snapshot_at DESC)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS iv_history (
+        underlying VARCHAR NOT NULL,
+        asof_date DATE NOT NULL,
+        expiry_bucket VARCHAR NOT NULL,
+        atm_iv DECIMAL(8,6),
+        sample_count INTEGER,
+        PRIMARY KEY (underlying, asof_date, expiry_bucket)
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_iv_history_lookup
+        ON iv_history(underlying, expiry_bucket, asof_date DESC)
     """,
 )
 
