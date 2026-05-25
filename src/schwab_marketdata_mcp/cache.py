@@ -56,7 +56,7 @@ import os
 import threading
 import time
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Final
 
@@ -723,6 +723,291 @@ class Cache:
                     exc,
                 )
 
+    # ----------------------------------------------- option chain snapshots
+
+    def write_option_chain_snapshot(
+        self,
+        underlying: str,
+        snapshot_at: datetime,
+        contracts: list[dict[str, Any]],
+    ) -> int:
+        """Persist a flattened option-chain snapshot to ``option_chain_snapshots``.
+
+        ``contracts`` is a list of dicts; each dict must carry at minimum
+        ``expiry`` (date | str | datetime), ``strike`` (numeric), and
+        ``call_put`` (``'CALL'`` / ``'PUT'`` / ``'C'`` / ``'P'``).  Any
+        Greek / volume / IV field is optional — missing values land as
+        ``NULL``.
+
+        Returns the number of rows successfully inserted (0 on error or
+        DB unavailable).  Idempotent: re-writing the same
+        ``(underlying, snapshot_at, expiry, strike, call_put)`` tuple
+        replaces the prior row.
+        """
+        if not isinstance(underlying, str) or not underlying:
+            return 0
+        if not isinstance(contracts, list) or not contracts:
+            return 0
+        snapshot_at_naive = _normalise_naive_utc(snapshot_at)
+        rows: list[tuple[Any, ...]] = []
+        for contract in contracts:
+            row = _normalise_option_contract(underlying, snapshot_at_naive, contract)
+            if row is not None:
+                rows.append(row)
+        if not rows:
+            return 0
+        with self._lock:
+            if self._conn is None:
+                return 0
+            try:
+                self._conn.executemany(
+                    """
+                    INSERT OR REPLACE INTO option_chain_snapshots (
+                        underlying, snapshot_at, expiry, strike, call_put,
+                        last_price, bid, ask, volume, open_interest,
+                        implied_vol, delta, gamma, theta, vega, rho, raw_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    rows,
+                )
+                self._record_event("write", "option_chain_snapshots")
+            except duckdb.Error as exc:
+                log.warning(
+                    '{"event":"cache_put_failed","table":"option_chain_snapshots","error":"%s"}',
+                    exc,
+                )
+                return 0
+        return len(rows)
+
+    def aggregate_atm_iv(
+        self,
+        underlying: str,
+        asof_date: date,
+        snapshot_at: datetime | None = None,
+    ) -> dict[str, float | None]:
+        """Compute ATM IV for the 30/60/90-day buckets and write to ``iv_history``.
+
+        For each bucket the algorithm is:
+
+        1. Pick the most recent snapshot of ``underlying`` at or before
+           ``snapshot_at`` (default: end of ``asof_date`` UTC).
+        2. Filter contracts whose ``DTE = expiry - asof_date`` falls
+           inside ``[bucket_days - tolerance, bucket_days + tolerance]``.
+        3. Inside that bucket, pick the strike closest to the
+           snapshot's ATM (median strike of the filtered slice — robust
+           to missing underlying price).
+        4. ATM IV = average of CALL-IV and PUT-IV at that strike.
+
+        Buckets with zero samples produce ``None`` and are still
+        written (sample_count = 0) so the lookback window has the
+        right calendar density.
+
+        Returns a dict ``{'30d': float|None, '60d': float|None, '90d': float|None}``.
+        """
+        if not isinstance(underlying, str) or not underlying:
+            return {"30d": None, "60d": None, "90d": None}
+        asof = _coerce_date(asof_date)
+        if asof is None:
+            return {"30d": None, "60d": None, "90d": None}
+        cutoff = (
+            _normalise_naive_utc(snapshot_at)
+            if snapshot_at is not None
+            else datetime.combine(asof, datetime.max.time())
+        )
+        contracts = self._fetch_latest_snapshot_contracts(underlying, cutoff)
+        result: dict[str, float | None] = {}
+        for bucket_days, label in (
+            (IV_BUCKET_30D_DAYS, "30d"),
+            (IV_BUCKET_60D_DAYS, "60d"),
+            (IV_BUCKET_90D_DAYS, "90d"),
+        ):
+            atm_iv, sample_count = _compute_atm_iv_for_bucket(contracts, asof, bucket_days)
+            self._upsert_iv_history(underlying, asof, label, atm_iv, sample_count)
+            result[label] = atm_iv
+        return result
+
+    def _fetch_latest_snapshot_contracts(
+        self,
+        underlying: str,
+        cutoff: datetime,
+    ) -> list[dict[str, Any]]:
+        """Return all rows from the most recent snapshot at or before ``cutoff``."""
+        with self._lock:
+            if self._conn is None:
+                return []
+            try:
+                latest = self._conn.execute(
+                    """
+                    SELECT MAX(snapshot_at) FROM option_chain_snapshots
+                    WHERE underlying = ? AND snapshot_at <= ?
+                    """,
+                    [underlying, cutoff],
+                ).fetchone()
+                if latest is None or latest[0] is None:
+                    return []
+                snapshot_at = latest[0]
+                rows = self._conn.execute(
+                    """
+                    SELECT expiry, strike, call_put, implied_vol
+                    FROM option_chain_snapshots
+                    WHERE underlying = ? AND snapshot_at = ?
+                    """,
+                    [underlying, snapshot_at],
+                ).fetchall()
+            except duckdb.Error as exc:
+                log.warning(
+                    '{"event":"cache_query_failed","table":"option_chain_snapshots","error":"%s"}',
+                    exc,
+                )
+                return []
+        out: list[dict[str, Any]] = []
+        for expiry, strike, call_put, iv in rows:
+            iso_expiry = _coerce_date(expiry)
+            if iso_expiry is None:
+                continue
+            out.append(
+                {
+                    "expiry": iso_expiry,
+                    "strike": _safe_float(strike),
+                    "call_put": str(call_put).upper(),
+                    "implied_vol": _safe_float(iv),
+                }
+            )
+        return out
+
+    def _upsert_iv_history(
+        self,
+        underlying: str,
+        asof_date: date,
+        bucket: str,
+        atm_iv: float | None,
+        sample_count: int,
+    ) -> None:
+        with self._lock:
+            if self._conn is None:
+                return
+            try:
+                self._conn.execute(
+                    """
+                    INSERT OR REPLACE INTO iv_history
+                        (underlying, asof_date, expiry_bucket, atm_iv, sample_count)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    [underlying, asof_date, bucket, atm_iv, int(sample_count)],
+                )
+                self._record_event("write", "iv_history")
+            except duckdb.Error as exc:
+                log.warning(
+                    '{"event":"cache_put_failed","table":"iv_history","error":"%s"}',
+                    exc,
+                )
+
+    def get_iv_percentile_rank(
+        self,
+        underlying: str,
+        expiry_bucket: str,
+        lookback_days: int = DEFAULT_IV_LOOKBACK_DAYS,
+    ) -> dict[str, Any]:
+        """Compute the IV percentile rank for ``underlying`` / ``expiry_bucket``.
+
+        ``percentile_rank`` is computed against the historical
+        distribution in ``iv_history`` over the past ``lookback_days``
+        calendar days, *excluding* the current row.  Returns 0-100 where
+        100 means "current IV is at or above every prior observation".
+
+        Returns the structured dict described in the v0.4 P1/C plan.
+        Fields default to ``None`` when there is no history.
+        """
+        bucket = (expiry_bucket or "").lower()
+        if bucket not in {"30d", "60d", "90d"}:
+            raise ValueError(f"unsupported expiry_bucket {expiry_bucket!r}; expected '30d'|'60d'|'90d'")
+        if not isinstance(lookback_days, int) or lookback_days < 1:
+            raise ValueError(f"lookback_days must be a positive int; got {lookback_days!r}")
+        if not isinstance(underlying, str) or not underlying:
+            raise ValueError("underlying must be a non-empty str")
+
+        rows = self._fetch_iv_history_window(underlying, bucket, lookback_days)
+        non_null = [r for r in rows if r["atm_iv"] is not None]
+        if not non_null:
+            return {
+                "underlying": underlying,
+                "expiry_bucket": bucket,
+                "current_iv": None,
+                "percentile_rank": None,
+                "sample_count": 0,
+                "lookback_days": lookback_days,
+                "min_iv": None,
+                "max_iv": None,
+                "median_iv": None,
+                "current_asof": None,
+            }
+        # Most recent first per ORDER BY DESC.
+        current_row = non_null[0]
+        current_iv = float(current_row["atm_iv"])
+        current_asof = current_row["asof_date"]
+        history = [float(r["atm_iv"]) for r in non_null[1:]]
+        if history:
+            below = sum(1 for v in history if v <= current_iv)
+            percentile_rank = round(100.0 * below / len(history), 2)
+        else:
+            # Only one observation in the window; rank undefined,
+            # report 50.0 as a neutral middle value rather than None
+            # so downstream reasoners can still display a number.
+            percentile_rank = 50.0
+        ivs = [float(r["atm_iv"]) for r in non_null]
+        return {
+            "underlying": underlying,
+            "expiry_bucket": bucket,
+            "current_iv": current_iv,
+            "percentile_rank": percentile_rank,
+            "sample_count": len(non_null),
+            "lookback_days": lookback_days,
+            "min_iv": min(ivs),
+            "max_iv": max(ivs),
+            "median_iv": _median(ivs),
+            "current_asof": current_asof.isoformat() if isinstance(current_asof, date) else None,
+        }
+
+    def _fetch_iv_history_window(
+        self,
+        underlying: str,
+        bucket: str,
+        lookback_days: int,
+    ) -> list[dict[str, Any]]:
+        cutoff = _utcnow().date() - timedelta(days=lookback_days)
+        with self._lock:
+            if self._conn is None:
+                return []
+            try:
+                rows = self._conn.execute(
+                    """
+                    SELECT asof_date, atm_iv, sample_count
+                    FROM iv_history
+                    WHERE underlying = ? AND expiry_bucket = ? AND asof_date >= ?
+                    ORDER BY asof_date DESC
+                    """,
+                    [underlying, bucket, cutoff],
+                ).fetchall()
+            except duckdb.Error as exc:
+                log.warning(
+                    '{"event":"cache_query_failed","table":"iv_history","error":"%s"}',
+                    exc,
+                )
+                return []
+        out: list[dict[str, Any]] = []
+        for asof, atm_iv, sample_count in rows:
+            iso_date = _coerce_date(asof)
+            if iso_date is None:
+                continue
+            out.append(
+                {
+                    "asof_date": iso_date,
+                    "atm_iv": _safe_float(atm_iv),
+                    "sample_count": int(sample_count) if sample_count is not None else 0,
+                }
+            )
+        return out
+
     # -------------------------------------------------------- OLAP queries
 
     def query_candles(self, symbol: str, start: datetime, end: datetime) -> list[dict[str, Any]]:
@@ -1018,6 +1303,234 @@ def _extract_quote_fields(symbol: str, raw: dict[str, Any]) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Option-chain snapshot helpers (v0.4 P1/C)
+# ---------------------------------------------------------------------------
+
+
+def _normalise_naive_utc(value: Any) -> datetime:
+    """Coerce ``value`` to a naive-UTC datetime; current UTC on failure."""
+    if isinstance(value, datetime):
+        if value.tzinfo is not None:
+            return value.astimezone(UTC).replace(tzinfo=None)
+        return value
+    parsed = _parse_dt(value)
+    if parsed is not None:
+        return parsed
+    return _utcnow()
+
+
+def _coerce_date(value: Any) -> date | None:
+    """Coerce a date / datetime / iso-string / epoch to a ``date``."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.fromtimestamp(float(value) / 1000.0, tz=UTC).date()
+        except (OSError, OverflowError, ValueError):
+            return None
+    if isinstance(value, str):
+        s = value.strip()
+        # ``'2026-06-19:30'`` and ``'2026-06-19'`` are both legitimate
+        # Schwab expDateMap key shapes.  Strip the optional DTE suffix.
+        if ":" in s:
+            s = s.split(":", 1)[0]
+        try:
+            return date.fromisoformat(s)
+        except ValueError:
+            parsed = _parse_dt(s)
+            return parsed.date() if parsed is not None else None
+    return None
+
+
+_CALL_PUT_NORMALISE: Final[dict[str, str]] = {
+    "C": "CALL",
+    "P": "PUT",
+    "CALL": "CALL",
+    "PUT": "PUT",
+}
+
+
+def _normalise_call_put(value: Any) -> str | None:
+    if value is None:
+        return None
+    s = str(value).strip().upper()
+    return _CALL_PUT_NORMALISE.get(s)
+
+
+def _normalise_option_contract(
+    underlying: str,
+    snapshot_at: datetime,
+    contract: Any,
+) -> tuple[Any, ...] | None:
+    """Convert a single contract dict into a row tuple for the INSERT.
+
+    Returns ``None`` if any required field (expiry / strike / call_put)
+    is missing or unparseable — those rows are silently dropped to keep
+    the writer best-effort.
+    """
+    if not isinstance(contract, dict):
+        return None
+    expiry = _coerce_date(contract.get("expiry") or contract.get("expirationDate"))
+    if expiry is None:
+        return None
+    strike = _safe_float(contract.get("strike") or contract.get("strikePrice"))
+    if strike is None:
+        return None
+    call_put = _normalise_call_put(contract.get("call_put") or contract.get("putCall"))
+    if call_put is None:
+        return None
+    raw = contract.get("raw")
+    raw_json = json.dumps(raw if raw is not None else contract, default=str)
+    return (
+        underlying,
+        snapshot_at,
+        expiry,
+        strike,
+        call_put,
+        _safe_float(contract.get("last_price") or contract.get("last")),
+        _safe_float(contract.get("bid")),
+        _safe_float(contract.get("ask")),
+        _safe_int(contract.get("volume") or contract.get("totalVolume")),
+        _safe_int(contract.get("open_interest") or contract.get("openInterest")),
+        _safe_float(contract.get("implied_vol") or contract.get("volatility")),
+        _safe_float(contract.get("delta")),
+        _safe_float(contract.get("gamma")),
+        _safe_float(contract.get("theta")),
+        _safe_float(contract.get("vega")),
+        _safe_float(contract.get("rho")),
+        raw_json,
+    )
+
+
+def flatten_option_chain_response(raw: Any) -> list[dict[str, Any]]:
+    """Flatten a Schwab option-chain response into a list of contracts.
+
+    Schwab returns ``callExpDateMap`` / ``putExpDateMap`` dicts shaped
+    like ``{ '2026-06-19:30': { '190.0': [ { ...contract... } ] } }``.
+    This helper unrolls both maps into a flat list with ``expiry`` /
+    ``strike`` / ``call_put`` resolved on every entry, ready for
+    :py:meth:`Cache.write_option_chain_snapshot`.
+
+    Best-effort — non-dict shapes return an empty list rather than
+    raising, so the cache layer never breaks the live tool path.
+    """
+    if not isinstance(raw, dict):
+        return []
+    out: list[dict[str, Any]] = []
+    for map_key, default_cp in (("callExpDateMap", "CALL"), ("putExpDateMap", "PUT")):
+        exp_map = raw.get(map_key)
+        if not isinstance(exp_map, dict):
+            continue
+        for exp_key, strike_map in exp_map.items():
+            if not isinstance(strike_map, dict):
+                continue
+            expiry = _coerce_date(exp_key)
+            for strike_key, contracts in strike_map.items():
+                if not isinstance(contracts, list):
+                    continue
+                strike = _safe_float(strike_key)
+                for c in contracts:
+                    if not isinstance(c, dict):
+                        continue
+                    cp = _normalise_call_put(c.get("putCall") or c.get("call_put") or default_cp) or default_cp
+                    out.append(
+                        {
+                            "expiry": expiry,
+                            "strike": strike,
+                            "call_put": cp,
+                            "bid": c.get("bid"),
+                            "ask": c.get("ask"),
+                            "last": c.get("last") or c.get("lastPrice") or c.get("mark"),
+                            "volume": c.get("totalVolume") or c.get("volume"),
+                            "openInterest": c.get("openInterest"),
+                            "volatility": _coerce_iv(c.get("volatility") or c.get("impliedVolatility")),
+                            "delta": c.get("delta"),
+                            "gamma": c.get("gamma"),
+                            "theta": c.get("theta"),
+                            "vega": c.get("vega"),
+                            "rho": c.get("rho"),
+                            "raw": c,
+                        }
+                    )
+    return out
+
+
+def _coerce_iv(value: Any) -> float | None:
+    """Schwab quotes IV as a percent (e.g. 32.5 = 32.5%); normalise to 0..1."""
+    iv = _safe_float(value)
+    if iv is None:
+        return None
+    if iv <= 0:
+        return None
+    # Heuristic: if the value looks like a percent (>= 1.5), divide by 100.
+    # Genuine fractional IVs (e.g. 0.32) are kept as-is.  This matches the
+    # convention used by every analytics consumer of ``iv_history``.
+    if iv > 1.5:
+        return iv / 100.0
+    return iv
+
+
+def _compute_atm_iv_for_bucket(
+    contracts: list[dict[str, Any]],
+    asof: date,
+    bucket_days: int,
+) -> tuple[float | None, int]:
+    """Return ``(atm_iv, sample_count)`` for the given DTE bucket.
+
+    ``contracts`` is the output of
+    :py:meth:`Cache._fetch_latest_snapshot_contracts` — already
+    decoded (expiry as ``date``, strike as float, IV as float|None).
+    """
+    lo = bucket_days - IV_BUCKET_TOLERANCE_DAYS
+    hi = bucket_days + IV_BUCKET_TOLERANCE_DAYS
+    in_bucket: list[dict[str, Any]] = []
+    for c in contracts:
+        expiry = c.get("expiry")
+        if not isinstance(expiry, date):
+            continue
+        dte = (expiry - asof).days
+        if dte < lo or dte > hi:
+            continue
+        if c.get("strike") is None:
+            continue
+        in_bucket.append(c)
+    if not in_bucket:
+        return None, 0
+    strikes = sorted({float(c["strike"]) for c in in_bucket})
+    median_strike = _median(strikes)
+    if median_strike is None:
+        return None, len(in_bucket)
+    # Closest strike to the median (most liquid centre).
+    atm_strike = min(strikes, key=lambda s: abs(s - median_strike))
+    ivs: list[float] = []
+    for c in in_bucket:
+        if abs(float(c["strike"]) - atm_strike) > 1e-9:
+            continue
+        iv = c.get("implied_vol")
+        if iv is None:
+            continue
+        ivs.append(float(iv))
+    if not ivs:
+        return None, len(in_bucket)
+    return sum(ivs) / len(ivs), len(in_bucket)
+
+
+def _median(values: list[float]) -> float | None:
+    if not values:
+        return None
+    s = sorted(values)
+    n = len(s)
+    mid = n // 2
+    if n % 2 == 1:
+        return float(s[mid])
+    return (float(s[mid - 1]) + float(s[mid])) / 2.0
+
+
+# ---------------------------------------------------------------------------
 # Singleton accessor
 # ---------------------------------------------------------------------------
 
@@ -1054,18 +1567,24 @@ def reset_cache_singleton() -> None:
 __all__ = [
     "CACHE_DB_FILENAME",
     "CACHE_DIR_NAME",
+    "DEFAULT_IV_LOOKBACK_DAYS",
     "DEFAULT_TTL_INSTRUMENTS_S",
     "DEFAULT_TTL_OPTION_CHAIN_S",
     "DEFAULT_TTL_PRICE_HISTORY_RECENT_S",
     "DEFAULT_TTL_QUOTES_S",
     "ENV_CACHE_BYPASS",
     "ENV_CACHE_ENABLED",
+    "IV_BUCKET_30D_DAYS",
+    "IV_BUCKET_60D_DAYS",
+    "IV_BUCKET_90D_DAYS",
+    "IV_BUCKET_TOLERANCE_DAYS",
     "RECENT_CANDLE_BOUNDARY_S",
     "Cache",
     "CacheStats",
     "cache_bypass",
     "cache_enabled",
     "default_db_path",
+    "flatten_option_chain_response",
     "get_cache",
     "reset_cache_singleton",
 ]
