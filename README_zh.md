@@ -21,8 +21,8 @@
 > - [`docs/HOURS.md`](docs/HOURS.md) —— 480 h 项目预算的累计工时；当前 ≈ 5%。
 
 生产级 **Model Context Protocol（MCP）** 服务端，把 Charles Schwab 的
-**Market Data Production** API 封装为 **14 个 tool**（10 个 endpoint +
-3 个元工具 + 1 个实验性 streaming snapshot），可直接接入 Cursor、Claude
+**Market Data Production** API 封装为 **15 个 tool**（10 个 endpoint +
+4 个元工具 + 1 个实验性 streaming snapshot），可直接接入 Cursor、Claude
 Code 以及任何兼容 MCP 协议的 AI agent。
 
 > **只读** —— 本项目仅调用 Schwab Market Data API，**不**调用 Schwab Trader
@@ -143,7 +143,7 @@ uv run pytest --cov                              # 整体 ≥85%，关键模块 
 - **不可二次分发数据约束** —— 配套的 workflows skill 在写入前会先调用
   `gh repo view --json isPrivate`，拒绝把 Schwab 数据写入公开仓库。
 
-### 工具面 —— 14 个 MCP tool
+### 工具面 —— 15 个 MCP tool
 
 名字 → endpoint 速查表：
 
@@ -162,7 +162,8 @@ uv run pytest --cov                              # 整体 ≥85%，关键模块 
 | 11 | `health_check`                | 本地 —— token 寿命 + 缓存健康              |
 | 12 | `get_server_info`             | 本地 —— 版本号 + 支持的 tool 列表          |
 | 13 | `get_cache_stats`             | 本地 —— DuckDB 缓存行数 / 体积 / 命中率   |
-| 14 | `get_streaming_snapshot` 🧪    | Streamer WebSocket —— 有界快照（实验性）   |
+| 14 | `get_iv_percentile`           | 本地 —— 基于 `iv_history` 计算 ATM IV 历史百分位（`refresh=True` 拉取最新 chain） |
+| 15 | `get_streaming_snapshot` 🧪    | Streamer WebSocket —— 有界快照（实验性）   |
 
 每个 tool 的详细说明见下文。
 
@@ -296,7 +297,7 @@ uv run pytest --cov                              # 整体 ≥85%，关键模块 
 - **入参**：无。
 - **返回**：
   `{server_version, mcp_sdk_version, schwab_py_version,
-  supported_tools: [...14 个 tool 名], platform_supported_v1}`
+  supported_tools: [...15 个 tool 名], platform_supported_v1}`
 - **示例**：`{}`
 
 #### 实验性 —— 有界 streaming snapshot（1 个）

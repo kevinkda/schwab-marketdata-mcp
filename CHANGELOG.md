@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`get_iv_percentile` (15th MCP tool)** — surfaces ATM IV percentile
+  rank for an underlying versus N days of cached history (default
+  252 ≈ 1 trading year). Buckets: `30d` / `60d` / `90d`. With
+  `refresh=False` (default) the tool serves only from the local
+  DuckDB `iv_history` table — appropriate for batch / dashboard
+  reads. With `refresh=True` it fetches a fresh option chain via
+  `get_option_chain`, persists a snapshot to
+  `option_chain_snapshots`, and aggregates today's ATM IV before
+  computing the rank. Sample-count < 30 → `percentile_rank=null` +
+  `sample_count_below_30` warning so callers do not over-interpret a
+  tiny sample.
+- **`option_chain_snapshots` analytics table** — row-normalised
+  cache of every option chain returned by `get_option_chain`. Schema:
+  `(underlying, snapshot_at, expiry, strike, call_put)` PK with
+  bid/ask/last/volume/open_interest plus the full Greek vector
+  (delta/gamma/theta/vega/rho) and `implied_vol`. Index on
+  `(underlying, snapshot_at DESC)` for fast latest-snapshot fetch.
+  Coexists with the legacy raw-JSON `option_chain_cache` table —
+  the read-back hit path is unchanged; the new table is purely for
+  analytics (`aggregate_atm_iv` / `get_iv_percentile_rank`). v0.4
+  spec called the new table `option_chain_cache`; we shipped it as
+  `option_chain_snapshots` to avoid colliding with the legacy
+  raw-JSON cache table of the same name from v0.2.
+- **`iv_history` materialised aggregation** — one row per
+  `(underlying, asof_date, expiry_bucket)` carrying the ATM IV
+  computed from the most recent `option_chain_snapshots` row at or
+  before `asof_date`. Written by `Cache.aggregate_atm_iv` (also
+  exposed via `get_iv_percentile(refresh=True)`). Empty buckets are
+  still written with `sample_count = 0` so the lookback window
+  preserves correct calendar density.
+
+### Changed
+
+- **`get_option_chain` now persists a flattened snapshot** to
+  `option_chain_snapshots` opportunistically — failures are
+  warning-logged and never break the tool. The response is enriched
+  with two new fields: `_cache_status` (already present from the
+  legacy cache layer) and `_cached_rows` (number of rows written to
+  the analytics table on this call). The tool's input signature is
+  **unchanged** — purely additive on the response side.
+- **Tool count** 14 → 15. `supported_tool_names()` and
+  `get_server_info().supported_tools` both reflect the new tool.
+
+### Compatibility
+
+- Test count: 337 → 365 passing on Linux. Coverage: 89.08% → 88.98%
+  (slight dip is the new `cache.py` analytics block; `tools/options.py`
+  is at 98%).
+
 ## [0.3.1] - 2026-05-24
 
 ### Fixed

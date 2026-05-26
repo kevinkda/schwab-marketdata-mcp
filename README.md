@@ -23,7 +23,7 @@
 >   budget; current usage ≈ 5%.
 
 Production-grade **Model Context Protocol (MCP)** server that exposes the
-Charles Schwab **Market Data Production** API as **14 tools** (10 endpoints + 3
+Charles Schwab **Market Data Production** API as **15 tools** (10 endpoints + 4
 meta tools + 1 experimental streaming snapshot tool) for use inside Cursor,
 Claude Code, and any other MCP-aware agent.
 
@@ -169,7 +169,8 @@ At-a-glance map of name → endpoint:
 | 11 | `health_check`                | local — token age + cache health           |
 | 12 | `get_server_info`             | local — versions + supported tool list     |
 | 13 | `get_cache_stats`             | local — DuckDB cache rows / size / hit-rate |
-| 14 | `get_streaming_snapshot` 🧪    | Streamer WebSocket — bounded snapshot      |
+| 14 | `get_iv_percentile`           | local — ATM IV percentile rank from cached `iv_history` (refresh=True pulls fresh chain) |
+| 15 | `get_streaming_snapshot` 🧪    | Streamer WebSocket — bounded snapshot      |
 
 Detailed per-tool reference is below.
 
