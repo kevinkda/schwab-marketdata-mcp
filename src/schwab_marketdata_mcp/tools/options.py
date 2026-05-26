@@ -1,12 +1,21 @@
 """``get_option_chain``, ``get_option_expiration_chain``, and
 ``get_iv_percentile`` tool impls.
 
-v0.4 P1/C — adds ``get_iv_percentile_impl`` as the 15th MCP tool: it
-computes the current ATM IV percentile rank for an underlying versus N
-days of cached history (default 252 ≈ 1 trading year).  When
-``refresh=True`` it first pulls a live option chain via
-``get_option_chain`` and aggregates ATM IV before computing the rank;
-when ``refresh=False`` it serves only from cached ``iv_history`` rows.
+v0.4 P1/C
+---------
+
+* ``get_option_chain_impl`` now also persists a *flattened* snapshot of
+  the chain to ``option_chain_snapshots`` (the v0.4 row-normalised
+  table, distinct from the legacy raw-JSON ``option_chain_cache``).
+  This is opportunistic — failures never break the live tool path —
+  and the response is enriched with ``_cached_rows`` so callers can
+  see how many contracts landed in the analytics table.
+* ``get_iv_percentile_impl`` is the 15th MCP tool: it computes the
+  current ATM IV percentile rank for an underlying versus N days of
+  cached history (default 252 ≈ 1 trading year).  When ``refresh=True``
+  it first pulls a live option chain and aggregates ATM IV before
+  computing the rank; when ``refresh=False`` it serves only from
+  cached ``iv_history`` rows.
 """
 
 from __future__ import annotations
@@ -18,6 +27,9 @@ from typing import Any
 from ..cache import (
     DEFAULT_IV_LOOKBACK_DAYS,
     Cache,
+    cache_bypass,
+    cache_enabled,
+    flatten_option_chain_response,
     get_cache,
 )
 from ..models import (
@@ -76,7 +88,65 @@ async def get_option_chain_impl(args: GetOptionChainInput) -> dict[str, Any]:
     def _store(cache: Cache, raw: dict[str, Any]) -> None:
         cache.put_option_chain(cache_params, raw)
 
-    return await call_endpoint("get_option_chain", fetch, cache_lookup=_lookup, cache_store=_store)
+    payload = await call_endpoint(
+        "get_option_chain",
+        fetch,
+        cache_lookup=_lookup,
+        cache_store=_store,
+    )
+
+    # ----- v0.4 P1/C — persist a row-normalised snapshot for analytics ----
+    # ``call_endpoint`` already populates ``_cache_status`` with one of
+    # ``hit | miss | bypass | disabled``.  We *augment* the payload with
+    # ``_cached_rows`` (number of contracts written to the analytics
+    # table on this call).  The legacy ``option_chain_cache`` raw-JSON
+    # table is untouched — that's the read-back hit path used by
+    # subsequent calls with the same params.
+    cached_rows = _persist_chain_snapshot(args.symbol, payload)
+    payload["_cached_rows"] = cached_rows
+    return payload
+
+
+def _persist_chain_snapshot(underlying: str, payload: Any) -> int:
+    """Write the flattened chain to ``option_chain_snapshots``.
+
+    Returns the number of rows successfully inserted.  Always returns
+    ``0`` when:
+
+    * the cache layer is disabled by env var, or
+    * ``_cache_status == 'hit'`` (we already wrote that snapshot the
+      first time around — re-writing would just thrash the table with
+      a near-identical row at a different ``snapshot_at``), or
+    * the response carries no ``callExpDateMap`` / ``putExpDateMap``
+      (e.g. error response, empty chain).
+
+    All exceptions are swallowed and logged at WARNING — option chain
+    is the live tool's hot path and analytics persistence must never
+    break it.  See the cache module's failure-mode section.
+    """
+    if not cache_enabled() or cache_bypass():
+        return 0
+    if not isinstance(payload, dict):
+        return 0
+    # Avoid re-writing on cache hits (the snapshot is already there).
+    if payload.get("_cache_status") == "hit":
+        return 0
+    cache = get_cache()
+    if cache is None:
+        return 0
+    try:
+        contracts = flatten_option_chain_response(payload)
+    except Exception as exc:  # pragma: no cover - defensive
+        log.warning('{"event":"option_chain_flatten_failed","error":"%s"}', exc)
+        return 0
+    if not contracts:
+        return 0
+    snapshot_at = datetime.now(tz=UTC).replace(tzinfo=None)
+    try:
+        return cache.write_option_chain_snapshot(underlying, snapshot_at, contracts)
+    except Exception as exc:  # pragma: no cover - defensive
+        log.warning('{"event":"option_chain_snapshot_write_failed","error":"%s"}', exc)
+        return 0
 
 
 async def get_option_expiration_chain_impl(
@@ -171,20 +241,26 @@ async def _refresh_iv_for_underlying(underlying: str, cache: Cache) -> dict[str,
     """Fetch a fresh chain and aggregate ATM IV for ``underlying``.
 
     Returns a small summary dict describing what was written so the
-    caller can attach it to the response under ``refresh_summary``.
+    caller can attach it to the response under ``refresh_summary``:
+
+        {
+          "rows_written": 412,        # snapshot rows inserted
+          "atm_iv": {"30d": 0.32, "60d": 0.28, "90d": 0.27},
+          "asof_date": "2026-05-25",
+          "snapshot_at": "2026-05-25T14:30:00Z",
+        }
+
     Errors are swallowed and reported via ``rows_written = 0`` —
     callers fall back to whatever cached history is available.
-
-    NOTE: until the next commit ``get_option_chain_impl`` does not
-    persist its own snapshot, so ``rows_written`` here is always 0;
-    the live aggregator depends on a separate writer that lands in
-    the very next commit.
     """
+    args = GetOptionChainInput(symbol=underlying)
     try:
-        await get_option_chain_impl(GetOptionChainInput(symbol=underlying))
+        payload = await get_option_chain_impl(args)
     except Exception as exc:  # pragma: no cover - defensive
         log.warning('{"event":"iv_refresh_chain_fetch_failed","error":"%s"}', exc)
+        payload = {}
 
+    rows_written = int(payload.get("_cached_rows") or 0) if isinstance(payload, dict) else 0
     snapshot_at = datetime.now(tz=UTC).replace(tzinfo=None)
     asof_date = snapshot_at.date()
     try:
@@ -194,7 +270,7 @@ async def _refresh_iv_for_underlying(underlying: str, cache: Cache) -> dict[str,
         atm = {"30d": None, "60d": None, "90d": None}
 
     return {
-        "rows_written": 0,
+        "rows_written": rows_written,
         "atm_iv": atm,
         "asof_date": asof_date.isoformat(),
         "snapshot_at": snapshot_at.isoformat() + "Z",
