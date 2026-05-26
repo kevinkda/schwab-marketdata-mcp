@@ -468,6 +468,24 @@ class GetCacheStatsInput(_BaseInput):
     """No input — local-only meta query for the DuckDB cache."""
 
 
+class GetIvPercentileInput(_BaseInput):
+    """Compute current IV percentile rank vs. N-day cached history.
+
+    v0.4 P1/C — surfaces the ``iv_history`` materialisation as a
+    first-class tool.  When ``refresh=True`` the tool fetches a fresh
+    option chain, flattens it into ``option_chain_snapshots``, runs
+    ``aggregate_atm_iv`` for the requested asof date, then computes the
+    percentile rank.  When ``refresh=False`` (default) the tool serves
+    only from cached ``iv_history`` rows — appropriate for batch /
+    scheduled use where the writer ran earlier.
+    """
+
+    underlying: StockSymbol
+    expiry_bucket: Literal["30d", "60d", "90d"] = "30d"
+    lookback_days: int = Field(default=252, ge=30, le=730)
+    refresh: bool = False
+
+
 class GetStreamingSnapshotInput(_BaseInput):
     """Bounded WebSocket snapshot via ``StreamerClient`` (plan §10 follow-up).
 
@@ -526,12 +544,13 @@ TOOL_INPUT_MODELS: Final[dict[str, type[_BaseInput]]] = {
     "health_check": HealthCheckInput,
     "get_server_info": GetServerInfoInput,
     "get_cache_stats": GetCacheStatsInput,
+    "get_iv_percentile": GetIvPercentileInput,
     "get_streaming_snapshot": GetStreamingSnapshotInput,
 }
 
 
 def supported_tool_names() -> list[str]:
-    """Return all 14 tool names in deterministic order."""
+    """Return all 15 tool names in deterministic order."""
     return list(TOOL_INPUT_MODELS.keys())
 
 
@@ -573,6 +592,7 @@ __all__ = [
     "FrequencyType",
     "GetCacheStatsInput",
     "GetInstrumentByCusipInput",
+    "GetIvPercentileInput",
     "GetMarketHourSingleInput",
     "GetMarketHoursInput",
     "GetMoversInput",

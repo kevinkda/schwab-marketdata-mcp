@@ -50,7 +50,7 @@ def _server_params(scenario: str = "normal") -> StdioServerParameters:
 
 
 @pytest.mark.asyncio
-async def test_stdio_server_lists_14_tools() -> None:
+async def test_stdio_server_lists_15_tools() -> None:
     async with stdio_client(_server_params()) as (read, write), ClientSession(read, write) as session:
         await session.initialize()
         tools = await session.list_tools()
@@ -69,6 +69,7 @@ async def test_stdio_server_lists_14_tools() -> None:
         "health_check",
         "get_server_info",
         "get_cache_stats",
+        "get_iv_percentile",
         "get_streaming_snapshot",
     }
     assert names == expected, f"unexpected tool set: {names}"
@@ -97,7 +98,7 @@ async def test_stdio_call_get_server_info_static() -> None:
     # Tolerate either the dict or text shape — both must contain 13 tools.
     assert "supported_tools" in parsed or "supported_tools" in text
     if "supported_tools" in parsed:
-        assert len(parsed["supported_tools"]) == 14
+        assert len(parsed["supported_tools"]) == 15
 
 
 @pytest.mark.asyncio

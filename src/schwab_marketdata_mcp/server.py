@@ -1,4 +1,4 @@
-"""FastMCP server entry point — 13 outward-facing tools.
+"""FastMCP server entry point — 15 outward-facing tools.
 
 Plan §3.2.3 — the **first** thing the module does is harden stdio so that
 no stray ``print`` from schwab-py / httpx pollutes the JSON-RPC stream.
@@ -201,7 +201,7 @@ async def _run_tool(
 
 
 # ---------------------------------------------------------------------------
-# 13 tools — each is a thin wrapper that validates → delegates → catches.
+# 15 tools — each is a thin wrapper that validates → delegates → catches.
 # ---------------------------------------------------------------------------
 
 
@@ -428,6 +428,39 @@ async def get_cache_stats() -> dict[str, Any]:
         return await meta.get_cache_stats_impl()
     except SchwabError as exc:
         return _err_to_dict(exc)
+
+
+@mcp.tool(
+    name="get_iv_percentile",
+    description=(
+        "Compute the current ATM IV percentile rank for an underlying "
+        "vs. N days of cached history (default 252 ≈ 1 trading year). "
+        "Buckets: '30d' / '60d' / '90d'.  When refresh=False (default) "
+        "this serves only from the local DuckDB iv_history table — "
+        "ideal for batch / dashboard reads.  When refresh=True the "
+        "tool first pulls a fresh option chain via get_option_chain, "
+        "writes a snapshot to option_chain_snapshots, and aggregates "
+        "today's ATM IV before computing the rank.  When sample_count "
+        "< 30 the percentile_rank is returned as null with a warning "
+        "so the caller does not over-interpret a tiny sample."
+    ),
+)
+async def get_iv_percentile_(
+    underlying: str,
+    expiry_bucket: str = "30d",
+    lookback_days: int = 252,
+    refresh: bool = False,
+) -> dict[str, Any]:
+    return await _run_tool(
+        {
+            "underlying": underlying,
+            "expiry_bucket": expiry_bucket,
+            "lookback_days": lookback_days,
+            "refresh": refresh,
+        },
+        "get_iv_percentile",
+        lambda v: options.get_iv_percentile_impl(v),
+    )
 
 
 @mcp.tool(
