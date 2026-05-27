@@ -20,20 +20,23 @@
 | v0.1.1  | 2026-05-23 | ~3 h                | 15 h       | Streaming snapshot tool (#13), GitHub community files (issue / PR templates).      |
 | v0.2.0  | 2026-05-23 | ~6 h                | 21 h       | DuckDB-backed local cache layer (`cache.py`), 14th tool `get_cache_stats`, threat-model T13 / T14 / A7 entries, Shakeout v2 playbook (zh + en).         |
 | v0.2.1  | 2026-05-23 | ~4 h                | 25 h       | Skill repo English mirror reaches 100% parity (workflows + ops); CHANGELOG bilingual. |
+| v0.3.0  | 2026-05-23 | ~1 h                | 26 h       | `docs/SLO.md`, `Cache.hourly_breakdown`, `metrics.recent_errors_window`, `health_check.overall_status` + 5-min error rate. |
+| v0.3.1  | 2026-05-24 | ~0.5 h              | 26.5 h     | `serverInfo.version` reports release tag (mcp 1.27.x compatibility fix). |
+| v0.4.0  | 2026-05-27 | ~5.5 h              | 32 h       | P1/C: `option_chain_snapshots` + `iv_history` + `get_iv_percentile` (15th tool) + 28 tests. |
 
 ## Phase 0 budget (per STRATEGY)
 
 - **Allocated**: 120 h (Phase 0 — "build the core")
-- **Used**: 25 h (≈ 21%)
-- **Remaining**: 95 h
+- **Used**: 32 h (≈ 27%)
+- **Remaining**: 88 h
 - **Status**: ✅ Within budget
 - **75% Phase 0 alarm (90 h)**: NOT YET REACHED
 
 ## Total project budget (per STRATEGY)
 
 - **Allocated**: 480 h (Phase 0 + Phase 2 + Phase 3 / Phase 4 fragments)
-- **Used**: 25 h (≈ 5%)
-- **Remaining**: 455 h
+- **Used**: 32 h (≈ 7%)
+- **Remaining**: 448 h
 - **Status**: ✅ Within budget
 - **Early-exit threshold (75% = 360 h)**: NOT YET REACHED
 - **Hard ceiling (100% = 480 h)**: NOT YET REACHED
