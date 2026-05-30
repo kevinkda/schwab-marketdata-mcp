@@ -9,59 +9,14 @@ permissions:
   contents: read
 
 jobs:
-  lint:
-    name: lint (ruff)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v4
-        with:
-          enable-cache: true
-      - run: uv sync --extra dev
-      - run: uv run ruff check src tests
-      - run: uv run ruff format --check src tests
-
-  type:
-    name: type (mypy --strict)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v4
-        with:
-          enable-cache: true
-      - run: uv sync --extra dev
-      - run: uv run mypy --strict src
-
-  security:
-    name: security (bandit + pip-audit + gitleaks)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0   # gitleaks scans full history
-      - uses: astral-sh/setup-uv@v4
-        with:
-          enable-cache: true
-      - run: uv sync --extra dev
-      - run: uv run bandit -r src -lll
-      - run: uv run pip-audit
-      - uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  test:
-    name: pytest --cov
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-        python: ["3.11", "3.12"]
-    steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v4
-        with:
-          enable-cache: true
-      - run: uv python install ${{ matrix.python }}
-      - run: uv sync --extra dev --python ${{ matrix.python }}
-      - run: uv run pytest --cov
+  ci:
+    # V5-D: consume the shared reusable CI workflow (kevinkda/mcp-ci-templates).
+    # secrets: inherit is required so the gitleaks step receives GITHUB_TOKEN.
+    # The matrix (ubuntu + macos, py3.11/3.12) mirrors the previous inline
+    # workflow exactly; the coverage gate (fail_under) stays pinned in this
+    # repo's pyproject.toml, so no threshold is passed here.
+    uses: kevinkda/mcp-ci-templates/.github/workflows/reusable-mcp-ci.yml@main
+    secrets: inherit  # pragma: allowlist secret
+    with:
+      os-matrix: '["ubuntu-latest", "macos-latest"]'
+      python-versions: '["3.11", "3.12"]'
