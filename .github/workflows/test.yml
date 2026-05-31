@@ -20,3 +20,10 @@ jobs:
     with:
       os-matrix: '["ubuntu-latest", "macos-latest"]'
       python-versions: '["3.11", "3.12"]'
+      # Markdown is no longer linted by the local pre-commit hook (it was moved
+      # to stages:[manual] because `npx --yes markdownlint-cli2` reinstalls the
+      # Node dependency tree on every commit in locked-down dev environments and
+      # is reaped by the pre-commit SIGTERM timeout).  Enable the markdownlint
+      # job in CI so the docs are still authoritatively linted on a runner with
+      # a warm Node cache.
+      run-markdownlint: true
