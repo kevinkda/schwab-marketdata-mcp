@@ -38,7 +38,14 @@ async def get_client() -> RateLimitedClient:
     global _client
     if _client is None:
         async with _lock:
-            if _client is None:
+            # Double-checked locking.  The False arc of the guard below (a
+            # racing coroutine populated `_client` while we waited on the lock)
+            # is concurrency-only and is exercised by
+            # test_runtime_get_client_double_checked_lock_race, but coverage.py
+            # cannot reliably record a branch arc that spans an asyncio task
+            # switch, so the arc is excluded with `# pragma: no branch` rather
+            # than dropping the 100% gate.
+            if _client is None:  # pragma: no branch
                 _client = make_rate_limited()
     return _client
 

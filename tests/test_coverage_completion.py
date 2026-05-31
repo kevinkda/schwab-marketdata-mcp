@@ -719,6 +719,55 @@ async def test_runtime_get_client_returns_cached(monkeypatch: pytest.MonkeyPatch
     _runtime.reset_client_cache()
 
 
+async def test_runtime_get_client_double_checked_lock_race(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_runtime.py — double-checked locking guard is concurrency-safe.
+
+    Two coroutines call :func:`get_client` concurrently against a freshly reset
+    cache while we hold the lock, so both queue behind it.  The winner builds
+    the client; the loser re-checks the inner guard (now non-None) and returns
+    the *same* instance without building a second client.  ``make_rate_limited``
+    must therefore run exactly once.
+
+    Note: the inner-guard short-circuit arc (``41->43``) is the loser's path.
+    It is exercised here, but coverage.py cannot reliably record branch arcs
+    that span an ``asyncio`` task switch, so the source carries a
+    ``# pragma: no branch`` on that guard; this test still asserts the behaviour
+    is correct.
+    """
+    import asyncio
+
+    from schwab_marketdata_mcp.tools import _runtime
+
+    _runtime.reset_client_cache()
+    _runtime._lock = asyncio.Lock()  # fresh lock bound to this running loop
+    sentinel = object()
+    calls = {"n": 0}
+
+    def _make_once() -> Any:
+        calls["n"] += 1
+        return sentinel
+
+    real_make = _runtime.make_rate_limited
+    monkeypatch.setattr(_runtime, "make_rate_limited", _make_once)
+    try:
+        await _runtime._lock.acquire()
+        task_a = asyncio.create_task(_runtime.get_client())
+        task_b = asyncio.create_task(_runtime.get_client())
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        _runtime._lock.release()
+        results = await asyncio.gather(task_a, task_b)
+    finally:
+        monkeypatch.setattr(_runtime, "make_rate_limited", real_make)
+
+    assert results[0] is sentinel
+    assert results[1] is sentinel
+    assert calls["n"] == 1  # loser short-circuited instead of double-building
+    _runtime.reset_client_cache()
+
+
 def test_runtime_to_dict_variants() -> None:
     """_runtime.py:110->112 path + _to_dict list/scalar/no-json branches."""
     from schwab_marketdata_mcp.tools import _runtime
