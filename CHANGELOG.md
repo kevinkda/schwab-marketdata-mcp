@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-05-31
+
+### Added
+
+- **100% test coverage** — full line + branch coverage across all 26
+  source modules (was 88.98%). New `tests/test_coverage_completion.py`
+  drives every remaining error-handling, cache-corruption, quarantine,
+  TTL, sparse-data, and platform-exception branch. The CI gate
+  (`[tool.coverage.report].fail_under`) is raised from 85 to **100**.
+- **OWASP Top 10 security suites (2017 / 2021 / 2025)** —
+  `tests/test_owasp_2017.py`, `tests/test_owasp_2021.py`,
+  `tests/test_owasp_2025.py`. Every applicable category carries a
+  substantive assertion: injection (symbol regex + parameterised DuckDB
+  binding), broken auth / access control (token-path allow-list, no
+  mutation endpoints on the read-only marketData scope), sensitive-data
+  exposure (bearer / access / refresh / app_secret redaction), insecure
+  deserialisation (strict-JSON token + fixtures, no pickle/eval), SSRF
+  (symbol / CUSIP inputs cannot smuggle a URL or metadata endpoint), and
+  prompt-injection of the 15 tool descriptions. **N/A** categories are
+  explicitly marked with source-scan drift guards: A4 XXE (no XML parser)
+  and A7 XSS (JSON-RPC only, no HTML rendering).
+- **Pentest / exception / boundary suites** —
+  `tests/test_pentest.py` (auth-bypass, injection through every
+  symbol-bearing tool, secret-exfiltration via error/log channels, SSRF,
+  resource-exhaustion floods, malicious local state),
+  `tests/test_exception.py` (401 → SchwabAuthError, 429 → retry →
+  SchwabRateLimitError, 5xx / 4xx / timeout / connect → SchwabTransientError,
+  malformed body → safe dict, best-effort cache/metrics swallow), and
+  `tests/test_boundary.py` (symbol-batch + streaming-symbol + duration +
+  IV-lookback bounds, TTL edges, sparse-IV-distribution edges, numeric
+  thresholds).
+- **`__version__` desync fix** — `schwab_marketdata_mcp.__init__.__version__`
+  was pinned at `0.3.1` while `pyproject.toml` had advanced to `0.4.0`.
+  Both are now synchronised at `0.4.1`, so the MCP `initialize`
+  `serverInfo.version` reports the correct release tag.
+
 ## [0.4.0] - 2026-05-27
 
 ### Added
@@ -305,8 +341,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - mcp Python SDK >=1.6,<2.0; schwab-py >=1.5.1,<1.6;
   httpx >=0.28.1,<0.29; respx >=0.22.0,<0.24.
 
-[Unreleased]: https://github.com/kevinkda/schwab-marketdata-mcp/compare/v0.4.0...HEAD
-[0.4.0]: https://github.com/kevinkda/schwab-marketdata-mcp/releases/tag/v0.4.0
+[Unreleased]: https://github.com/kevinkda/schwab-marketdata-mcp/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/kevinkda/schwab-marketdata-mcp/releases/tag/v0.4.1
 [0.3.1]: https://github.com/kevinkda/schwab-marketdata-mcp/releases/tag/v0.3.1
 [0.3.0]: https://github.com/kevinkda/schwab-marketdata-mcp/releases/tag/v0.3.0
 [0.2.0]: https://github.com/kevinkda/schwab-marketdata-mcp/releases/tag/v0.2.0

@@ -20,6 +20,6 @@ experimental (Tier A best-effort) - see ``docs/WINDOWS_PORTING.md``.
 
 from __future__ import annotations
 
-__version__ = "0.3.1"
+__version__ = "0.4.1"
 
 __all__ = ["__version__"]

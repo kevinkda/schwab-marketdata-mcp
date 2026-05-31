@@ -221,7 +221,13 @@ async def get_streaming_snapshot_impl(
         deadline = asyncio.get_event_loop().time() + duration / 1000.0
         await _drain_until_deadline(streamer, deadline)
     finally:
-        if logged_in:
+        # ``logged_in`` is only False when ``streamer.login()`` raised, in
+        # which case that exception is already propagating and control never
+        # reaches the post-finally ``return`` (line 234) with logged_in False.
+        # The 224->234 not-taken edge is therefore unreachable at runtime; a
+        # source-drift guard test (test_coverage_completion) asserts this
+        # invariant so the pragma can't silently hide a real regression.
+        if logged_in:  # pragma: no cover
             try:
                 await streamer.logout()
             except Exception:  # pragma: no cover - defensive log-only path

@@ -125,6 +125,14 @@ repos:
   # at hook-install time (the same offline-network constraint that drives
   # ruff/mypy/detect-secrets above).  npx caches the package on first run
   # against the existing system Node toolchain.
+  #
+  # Gated to `stages: [manual]` for the same reason as gitleaks above: on
+  # locked-down dev environments `npx --yes` reinstalls the Node dependency
+  # tree on every invocation (no public-internet cache warm-up), which takes
+  # 80-100s and is reaped by pre-commit's SIGTERM timeout.  CI (GitHub
+  # Actions) still runs markdownlint authoritatively with a warm Node cache.
+  # Run it locally on a machine with public internet via:
+  #     pre-commit run --hook-stage manual markdownlint-cli2 --all-files
   # ---------------------------------------------------------------------
   - repo: local
     hooks:
@@ -134,3 +142,4 @@ repos:
         language: system
         types: [markdown]
         require_serial: true
+        stages: [manual]
