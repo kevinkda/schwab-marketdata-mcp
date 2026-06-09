@@ -597,9 +597,10 @@ def test_meta_safe_cache_summary_disabled(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 def test_meta_safe_cache_summary_get_cache_none(monkeypatch: pytest.MonkeyPatch) -> None:
-    """meta.py:54 — get_cache() returns None → enabled False summary."""
+    """meta.py:54 — enabled but get_cache() returns None → enabled False summary."""
     from schwab_marketdata_mcp.tools import meta
 
+    monkeypatch.setenv("SCHWAB_CACHE_ENABLED", "true")
     monkeypatch.setattr(meta, "get_cache", lambda: None)
     out = meta._safe_cache_summary()
     assert out["enabled"] is False
@@ -609,6 +610,7 @@ def test_meta_safe_cache_summary_get_stats_raises(monkeypatch: pytest.MonkeyPatc
     """meta.py:57-58 — get_stats() raising → enabled True, zeroed numerics."""
     from schwab_marketdata_mcp.tools import meta
 
+    monkeypatch.setenv("SCHWAB_CACHE_ENABLED", "true")
     fake_cache = MagicMock()
     fake_cache.get_stats.side_effect = RuntimeError("stats boom")
     monkeypatch.setattr(meta, "get_cache", lambda: fake_cache)
@@ -1633,7 +1635,7 @@ def test_get_cache_singleton_race_branch(monkeypatch: pytest.MonkeyPatch) -> Non
     inner re-check (1553) finds it set → the ``Cache()`` build is skipped.
     """
     cache.reset_cache_singleton()
-    monkeypatch.delenv("SCHWAB_CACHE_ENABLED", raising=False)
+    monkeypatch.setenv("SCHWAB_CACHE_ENABLED", "true")
 
     sentinel = cache.Cache(":memory:")
     real_lock = cache._singleton_lock
@@ -2004,7 +2006,7 @@ def test_truncate_expired_nothing_to_delete(tmp_path: Path) -> None:
 def test_get_cache_singleton_first_build(monkeypatch: pytest.MonkeyPatch) -> None:
     """cache.py:1553-1555 — first get_cache() builds the singleton inside the lock."""
     cache.reset_cache_singleton()
-    monkeypatch.delenv("SCHWAB_CACHE_ENABLED", raising=False)
+    monkeypatch.setenv("SCHWAB_CACHE_ENABLED", "true")
     c = cache.get_cache()
     assert c is not None
     cache.reset_cache_singleton()

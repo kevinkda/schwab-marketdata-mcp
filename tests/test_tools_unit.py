@@ -40,6 +40,9 @@ async def fake_client(repo_fixtures_dir: Path, monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setenv("SCHWAB_MOCK_FIXTURES_DIR", str(repo_fixtures_dir))
     monkeypatch.setenv("SCHWAB_MOCK_SCENARIO", "normal")
     monkeypatch.setenv("SCHWAB_MAX_RETRIES", "0")  # tests don't need real retries
+    # v0.4.2: cache is opt-in (default off). Tool unit tests exercise the
+    # read-through cache closures, so enable it explicitly here.
+    monkeypatch.setenv("SCHWAB_CACHE_ENABLED", "true")
     rt.reset_client_cache()
     yield
     rt.reset_client_cache()

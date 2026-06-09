@@ -184,7 +184,8 @@ def test_instruments_round_trip(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_stats_reflects_writes_and_events(tmp_path: Path) -> None:
+def test_stats_reflects_writes_and_events(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(cache.ENV_CACHE_ENABLED, "true")
     db = tmp_path / "c.duckdb"
     with cache.Cache(db) as c:
         c.put_quote("AAPL", _quote_payload("AAPL"))
@@ -224,6 +225,31 @@ def test_bypass_flag(monkeypatch: pytest.MonkeyPatch) -> None:
     assert cache.cache_bypass() is True
     monkeypatch.delenv(cache.ENV_CACHE_BYPASS, raising=False)
     assert cache.cache_bypass() is False
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ["1", "true", "yes", "on", "TRUE", "Yes", "On", " true ", "  1 ", "\tyes\n"],
+)
+def test_cache_enabled_truthy_matrix(monkeypatch: pytest.MonkeyPatch, raw: str) -> None:
+    """v0.4.2: opt-in flag accepts 1/true/yes/on across case + surrounding whitespace."""
+    monkeypatch.setenv(cache.ENV_CACHE_ENABLED, raw)
+    assert cache.cache_enabled() is True
+
+
+@pytest.mark.parametrize("raw", ["0", "false", "no", "off", "FALSE", "nope", "2", "", "   "])
+def test_cache_enabled_falsy_matrix(monkeypatch: pytest.MonkeyPatch, raw: str) -> None:
+    """Anything outside the truthy set (incl. empty / whitespace-only) → disabled."""
+    monkeypatch.setenv(cache.ENV_CACHE_ENABLED, raw)
+    assert cache.cache_enabled() is False
+
+
+def test_cache_enabled_unset_defaults_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """v0.4.2 BREAKING: unset env var now defaults to disabled (was on)."""
+    monkeypatch.delenv(cache.ENV_CACHE_ENABLED, raising=False)
+    assert cache.cache_enabled() is False
+    cache.reset_cache_singleton()
+    assert cache.get_cache() is None
 
 
 def test_concurrent_writes_do_not_lose_rows(tmp_path: Path) -> None:
@@ -342,6 +368,7 @@ async def test_call_endpoint_records_cache_status_on_miss(
 ) -> None:
     """First call → miss + write; second call → hit (no API)."""
     del use_fake_backend  # consumed via fixture
+    monkeypatch.setenv("SCHWAB_CACHE_ENABLED", "true")
     from schwab_marketdata_mcp import server
 
     out1 = await server.get_quote(symbol="AAPL")
@@ -357,6 +384,7 @@ async def test_call_endpoint_bypass_skips_cache(
     del use_fake_backend
     from schwab_marketdata_mcp import server
 
+    monkeypatch.setenv("SCHWAB_CACHE_ENABLED", "true")
     monkeypatch.setenv("SCHWAB_CACHE_BYPASS", "1")
     out = await server.get_quote(symbol="AAPL")
     assert out.get("_cache_status") == "bypass"
@@ -376,6 +404,7 @@ async def test_call_endpoint_disabled_skips_cache(
 
 async def test_get_cache_stats_tool(monkeypatch: pytest.MonkeyPatch, use_fake_backend: None) -> None:
     del use_fake_backend
+    monkeypatch.setenv("SCHWAB_CACHE_ENABLED", "true")
     from schwab_marketdata_mcp import server
 
     out = await server.get_cache_stats()

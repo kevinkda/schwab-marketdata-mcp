@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-06-10
+
+### Changed
+
+- ⚠️ **BREAKING: DuckDB cache is now opt-in (default DISABLED).**
+  `cache_enabled()` flips its default from `True` to `False`, so an
+  unset `SCHWAB_CACHE_ENABLED` now yields **no cache** — no `cache.duckdb`
+  file is created and every cacheable tool hits Schwab live, reporting
+  `_cache_status: "disabled"`. Re-enable explicitly with
+  `SCHWAB_CACHE_ENABLED=true` (also accepts `1` / `yes` / `on`, case- and
+  whitespace-insensitive). This zeroes the default on-disk footprint and
+  removes implicit state for fresh installs and CI. Tests, `.env.example`,
+  `README.md`, and `README_zh.md` updated accordingly; 100% coverage and
+  all OWASP 2017/2021/2025 suites preserved.
+
 ## [0.4.1] - 2026-05-31
 
 ### Added

@@ -124,7 +124,10 @@ uv run pytest --cov                              # 整体 ≥85%，关键模块 
   `get_option_chain`、`search_instruments`、`get_instrument_by_cusip`）。
   按表分级 TTL：quotes 60 s / option chain 5 m / instruments 24 h /
   price history 「历史 candle 永久 + 最近 1 h 内若超过 60 s 强制刷新」。
-  通过 `SCHWAB_CACHE_ENABLED` 总开关 / `SCHWAB_CACHE_BYPASS=1` 单次绕过。
+  缓存**默认关闭（需显式开启）**——不创建 DuckDB 文件，每次工具调用都实时打
+  Schwab。通过 `SCHWAB_CACHE_ENABLED=true`（也接受 `1` / `yes` / `on`）显式启用，
+  `SCHWAB_CACHE_BYPASS=1` 单次绕过。关闭时可缓存 tool 返回
+  `_cache_status: "disabled"`，响应结构其余不变。
   这一层也为 Shakeout 研究 playbook 提供本地 OLAP 查询接口。
 - **健康检查**（`schwab_marketdata_mcp.health`）针对 token 寿命、丢失、
   格式错误、权限不安全等情况返回不同退出码，可直接接入 cron / launchd

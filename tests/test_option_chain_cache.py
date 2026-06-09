@@ -329,6 +329,23 @@ def test_persist_chain_snapshot_returns_zero_when_cache_disabled(
     cache_mod.reset_cache_singleton()
 
 
+def test_persist_chain_snapshot_returns_zero_when_cache_singleton_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """options.py:135-136 — enabled + non-hit miss payload, but the cache
+    singleton resolves to ``None`` (e.g. a build failure) → writer
+    short-circuits to 0 rather than dereferencing ``None``."""
+    from schwab_marketdata_mcp.tools import options as options_tools
+
+    monkeypatch.setenv("SCHWAB_CACHE_ENABLED", "true")
+    monkeypatch.delenv("SCHWAB_CACHE_BYPASS", raising=False)
+    monkeypatch.setattr(options_tools, "get_cache", lambda: None)
+    payload = _schwab_chain_payload()
+    payload["_cache_status"] = "miss"
+    rows = options_tools._persist_chain_snapshot("AAPL", payload)
+    assert rows == 0
+
+
 def test_persist_chain_snapshot_returns_zero_for_empty_chain(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

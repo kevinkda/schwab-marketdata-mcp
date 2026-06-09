@@ -130,8 +130,11 @@ Claude Desktop), see [`docs/REGISTER.md`](docs/REGISTER.md).
   `get_instrument_by_cusip`). Per-table TTLs (60 s quotes / 5 m option
   chains / 24 h instruments / 1 h-recent + 60 s-stale price history)
   cut Schwab API pressure and unlock OLAP queries for the Shakeout
-  research workflow. Toggle via `SCHWAB_CACHE_ENABLED`; force fresh
-  via `SCHWAB_CACHE_BYPASS=1`.
+  research workflow. **Disabled by default (opt-in)** — no DuckDB file is
+  created and every call hits Schwab live. Enable explicitly with
+  `SCHWAB_CACHE_ENABLED=true` (also accepts `1` / `yes` / `on`); force
+  fresh reads via `SCHWAB_CACHE_BYPASS=1`. When disabled, cacheable tools
+  report `_cache_status: "disabled"`; the response shape is unchanged.
 - **Health probe** (`schwab_marketdata_mcp.health`) returns distinct exit
   codes for token age, missing/malformed token, and insecure permissions —
   ready for cron / launchd alerting.
