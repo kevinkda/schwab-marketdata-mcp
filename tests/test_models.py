@@ -285,16 +285,17 @@ def test_validate_tool_input_passes_through_schwab_validation_error() -> None:
     assert ei.value.field == "symbols"
 
 
-def test_supported_tool_names_count_15() -> None:
+def test_supported_tool_names_count_17() -> None:
     names = supported_tool_names()
-    assert len(names) == 15
+    assert len(names) == 17
     assert names[-5:] == [
-        "health_check",
         "get_server_info",
         "get_cache_stats",
         "get_iv_percentile",
+        "get_iv_surface",
         "get_streaming_snapshot",
     ]
+    assert "get_option_greeks_summary" in names
 
 
 def test_get_option_expiration_chain_input() -> None:

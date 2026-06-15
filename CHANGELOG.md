@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-06-16
+
+### Added
+
+- **`get_option_greeks_summary` (16th MCP tool, v0.7 T1/E1).** Pulls the
+  live option chain (cache-aware) and folds every contract's
+  `delta` / `gamma` / `theta` / `vega` / `rho` into **net exposures**,
+  split by call/put and by expiry. Works **without** ClickHouse — the
+  Greeks are computed in-process from the freshly-fetched chain, so the
+  tool is useful on the default memory backend; an enabled cache simply
+  adds the same option-chain read-back as `get_option_chain`.
+  - `weighting="open_interest"` (default) weights each contract's Greek by
+    its open interest (the standard dealer-positioning convention) and
+    transparently **falls back to equal weighting** — with an
+    `open_interest_unavailable_equal_weighted` warning — when no contract
+    in the summary reports open interest.
+  - `weighting="equal"` uses a simple mean across contracts that report
+    each Greek.
+  - Optional `expiry` (`YYYY-MM-DD`) restricts the aggregation to a single
+    expiration. Non-finite / unparseable Greeks are dropped; missing
+    Greeks return `null` for that key.
+- **`get_iv_surface` (17th MCP tool, v0.7 T1/E6).** Returns the ATM IV
+  term-structure surface across the `30d` / `60d` / `90d` expiry buckets
+  in one call — per bucket, the current ATM IV plus its percentile rank
+  versus `lookback_days` of cached history (default 252 ≈ 1 trading year).
+  Cross-bucket companion to `get_iv_percentile`. Depends on durable
+  `iv_history` rows that only the **ClickHouse** backend retains: when the
+  cache is disabled or running on the memory backend (no history) the tool
+  flags `requires_clickhouse_persistence=True` and returns empty buckets
+  rather than raising.
+- New `Cache.get_iv_surface(underlying, lookback_days)` analytics reader
+  folding `get_iv_percentile_rank` over the three buckets.
+
+### Changed
+
+- `get_server_info` / `list_tools` now report **17** tools (was 15).
+- Bumped `__version__` to match the package release tag (the in-package
+  `__version__` had drifted to `0.4.2`); `serverInfo.version` now reports
+  `0.6.0`.
+
 ## [0.5.0] - 2026-06-15
 
 ### Changed

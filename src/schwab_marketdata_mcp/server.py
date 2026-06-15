@@ -1,4 +1,4 @@
-"""FastMCP server entry point — 15 outward-facing tools.
+"""FastMCP server entry point — 17 outward-facing tools.
 
 Plan §3.2.3 — the **first** thing the module does is harden stdio so that
 no stray ``print`` from schwab-py / httpx pollutes the JSON-RPC stream.
@@ -201,7 +201,7 @@ async def _run_tool(
 
 
 # ---------------------------------------------------------------------------
-# 15 tools — each is a thin wrapper that validates → delegates → catches.
+# 17 tools — each is a thin wrapper that validates → delegates → catches.
 # ---------------------------------------------------------------------------
 
 
@@ -460,6 +460,58 @@ async def get_iv_percentile_(
         },
         "get_iv_percentile",
         lambda v: options.get_iv_percentile_impl(v),
+    )
+
+
+@mcp.tool(
+    name="get_option_greeks_summary",
+    description=(
+        "Aggregate per-contract Greeks (delta/gamma/theta/vega/rho) from "
+        "the live option chain into net exposures, split by call/put and "
+        "by expiry.  Works WITHOUT ClickHouse — Greeks are computed live "
+        "from the freshly-fetched chain.  weighting='open_interest' "
+        "(default) weights by OI and falls back to equal-weight when no "
+        "contract reports OI; weighting='equal' uses a simple mean.  "
+        "Optional expiry (YYYY-MM-DD) isolates a single expiration."
+    ),
+)
+async def get_option_greeks_summary_(
+    underlying: str,
+    expiry: str | None = None,
+    weighting: str | None = None,
+) -> dict[str, Any]:
+    return await _run_tool(
+        {
+            "underlying": underlying,
+            "expiry": expiry,
+            "weighting": weighting if weighting is not None else "open_interest",
+        },
+        "get_option_greeks_summary",
+        lambda v: options.get_option_greeks_summary_impl(v),
+    )
+
+
+@mcp.tool(
+    name="get_iv_surface",
+    description=(
+        "Return the ATM IV term-structure surface across the 30d/60d/90d "
+        "expiry buckets in one call — per bucket: current ATM IV plus its "
+        "percentile rank vs. lookback_days of cached history (default "
+        "252 ≈ 1 trading year).  Cross-bucket companion to "
+        "get_iv_percentile.  Depends on durable iv_history rows: when the "
+        "cache is disabled or on the memory backend (no history) the tool "
+        "returns requires_clickhouse_persistence=True with empty buckets "
+        "rather than raising."
+    ),
+)
+async def get_iv_surface_(
+    underlying: str,
+    lookback_days: int = 252,
+) -> dict[str, Any]:
+    return await _run_tool(
+        {"underlying": underlying, "lookback_days": lookback_days},
+        "get_iv_surface",
+        lambda v: options.get_iv_surface_impl(v),
     )
 
 

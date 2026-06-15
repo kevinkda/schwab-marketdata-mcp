@@ -486,6 +486,55 @@ class GetIvPercentileInput(_BaseInput):
     refresh: bool = False
 
 
+class GetOptionGreeksSummaryInput(_BaseInput):
+    """Aggregate per-contract Greeks for an underlying's live option chain.
+
+    v0.6 T1/E1 — pulls the current option chain (cache-aware) and folds
+    every contract's ``delta`` / ``gamma`` / ``theta`` / ``vega`` /
+    ``rho`` into net exposures, split by call/put and by expiry.  This
+    tool works **without** ClickHouse: the Greeks are computed live from
+    the freshly-fetched chain.  When the cache layer is enabled it also
+    benefits from the same option-chain read-back as ``get_option_chain``.
+
+    ``expiry`` is optional; when set (``YYYY-MM-DD``) the aggregation is
+    restricted to contracts expiring on that date so callers can isolate
+    a single expiration's net Greeks.
+
+    ``weighting`` selects the aggregation weight:
+
+    * ``open_interest`` (default) — weight each contract's Greek by its
+      open interest, the standard dealer-positioning convention.  When a
+      contract is missing open interest it contributes ``0`` weight, and
+      if **no** contract in a bucket carries open interest the tool
+      transparently falls back to equal weighting for that bucket.
+    * ``equal`` — equal-weight every contract (simple mean of the Greek
+      across contracts that report it).
+    """
+
+    underlying: StockSymbol
+    expiry: datetime | None = None
+    weighting: Literal["open_interest", "equal"] = "open_interest"
+
+
+class GetIvSurfaceInput(_BaseInput):
+    """Return the ATM IV term-structure surface across expiry buckets.
+
+    v0.6 T1/E6 — reads cached ``iv_history`` for the 30d / 60d / 90d
+    buckets in one call and returns, per bucket, the current ATM IV plus
+    its percentile rank versus ``lookback_days`` of history.  This is the
+    cross-bucket companion to ``get_iv_percentile`` (single bucket).
+
+    Persistence requirement: the surface is built from durable
+    ``iv_history`` rows, which only the ClickHouse backend retains.  When
+    the cache is disabled or running on the memory backend (no history),
+    the tool returns ``requires_clickhouse_persistence=True`` with empty
+    buckets rather than raising — the read path stays non-fatal.
+    """
+
+    underlying: StockSymbol
+    lookback_days: int = Field(default=252, ge=30, le=730)
+
+
 class GetStreamingSnapshotInput(_BaseInput):
     """Bounded WebSocket snapshot via ``StreamerClient`` (plan §10 follow-up).
 
@@ -536,6 +585,7 @@ TOOL_INPUT_MODELS: Final[dict[str, type[_BaseInput]]] = {
     "get_price_history": GetPriceHistoryInput,
     "get_option_chain": GetOptionChainInput,
     "get_option_expiration_chain": GetOptionExpirationChainInput,
+    "get_option_greeks_summary": GetOptionGreeksSummaryInput,
     "get_market_hours": GetMarketHoursInput,
     "get_market_hour_single": GetMarketHourSingleInput,
     "get_movers": GetMoversInput,
@@ -545,12 +595,13 @@ TOOL_INPUT_MODELS: Final[dict[str, type[_BaseInput]]] = {
     "get_server_info": GetServerInfoInput,
     "get_cache_stats": GetCacheStatsInput,
     "get_iv_percentile": GetIvPercentileInput,
+    "get_iv_surface": GetIvSurfaceInput,
     "get_streaming_snapshot": GetStreamingSnapshotInput,
 }
 
 
 def supported_tool_names() -> list[str]:
-    """Return all 15 tool names in deterministic order."""
+    """Return all 18 tool names in deterministic order."""
     return list(TOOL_INPUT_MODELS.keys())
 
 
@@ -593,11 +644,13 @@ __all__ = [
     "GetCacheStatsInput",
     "GetInstrumentByCusipInput",
     "GetIvPercentileInput",
+    "GetIvSurfaceInput",
     "GetMarketHourSingleInput",
     "GetMarketHoursInput",
     "GetMoversInput",
     "GetOptionChainInput",
     "GetOptionExpirationChainInput",
+    "GetOptionGreeksSummaryInput",
     "GetPriceHistoryInput",
     "GetQuoteInput",
     "GetQuotesInput",

@@ -21,9 +21,9 @@
 > - [`docs/HOURS.md`](docs/HOURS.md) —— 480 h 项目预算的累计工时；当前 ≈ 5%。
 
 生产级 **Model Context Protocol（MCP）** 服务端，把 Charles Schwab 的
-**Market Data Production** API 封装为 **15 个 tool**（10 个 endpoint +
-4 个元工具 + 1 个实验性 streaming snapshot），可直接接入 Cursor、Claude
-Code 以及任何兼容 MCP 协议的 AI agent。
+**Market Data Production** API 封装为 **17 个 tool**（10 个 endpoint +
+2 个派生期权分析 + 3 个元工具 + 1 个缓存历史分析 + 1 个实验性 streaming
+snapshot），可直接接入 Cursor、Claude Code 以及任何兼容 MCP 协议的 AI agent。
 
 > **只读** —— 本项目仅调用 Schwab Market Data API，**不**调用 Schwab Trader
 > API，**不会**下单。Schwab 服务条款相关说明见 [合规使用](#合规使用)。
@@ -136,7 +136,7 @@ uv run pytest --cov                              # 整体 ≥85%，关键模块 
   | `memory` | ✅ | 无（stdlib） | 进程内 LRU + TTL，并发安全、非阻塞、无文件。派生分析历史（`option_chain_snapshots` / `iv_history` / candle OLAP）不保留持久存储，优雅降级（`get_iv_percentile` 返回 `cache_disabled`/空载荷，快照写入 `_cached_rows: 0`）。 |
   | `clickhouse` | — | `pip install schwab-marketdata-mcp[clickhouse]` + `SCHWAB_CLICKHOUSE_URL` | 持久化派生分析时间序列，提供真实的 ATM-IV / IV 百分位 / candle OLAP 分析。 |
 
-  默认 memory 后端下 15 个 tool 全部开箱即用；仅依赖 IV 历史的分析需装
+  默认 memory 后端下 17 个 tool 全部开箱即用；仅依赖 IV 历史的分析需装
   ClickHouse extra 才能保留跨会话历史。
 - **健康检查**（`schwab_marketdata_mcp.health`）针对 token 寿命、丢失、
   格式错误、权限不安全等情况返回不同退出码，可直接接入 cron / launchd
@@ -155,7 +155,7 @@ uv run pytest --cov                              # 整体 ≥85%，关键模块 
 - **不可二次分发数据约束** —— 配套的 workflows skill 在写入前会先调用
   `gh repo view --json isPrivate`，拒绝把 Schwab 数据写入公开仓库。
 
-### 工具面 —— 15 个 MCP tool
+### 工具面 —— 17 个 MCP tool
 
 名字 → endpoint 速查表：
 
@@ -166,16 +166,18 @@ uv run pytest --cov                              # 整体 ≥85%，关键模块 
 | 3  | `get_price_history`           | `GET /pricehistory`                        |
 | 4  | `get_option_chain`            | `GET /chains`                              |
 | 5  | `get_option_expiration_chain` | `GET /expirationchain`                     |
-| 6  | `get_market_hours`            | `GET /markets`                             |
-| 7  | `get_market_hour_single`      | `GET /markets/{market_id}`                 |
-| 8  | `get_movers`                  | `GET /movers/{symbol_id}`                  |
-| 9  | `search_instruments`          | `GET /instruments`                         |
-| 10 | `get_instrument_by_cusip`     | `GET /instruments/{cusip_id}`              |
-| 11 | `health_check`                | 本地 —— token 寿命 + 缓存健康              |
-| 12 | `get_server_info`             | 本地 —— 版本号 + 支持的 tool 列表          |
-| 13 | `get_cache_stats`             | 本地 —— 缓存后端（memory/clickhouse）+ 实时条目数 |
-| 14 | `get_iv_percentile`           | 本地 —— 基于 `iv_history` 计算 ATM IV 历史百分位（`refresh=True` 拉取最新 chain） |
-| 15 | `get_streaming_snapshot` 🧪    | Streamer WebSocket —— 有界快照（实验性）   |
+| 6  | `get_option_greeks_summary`   | 派生 —— 从 `GET /chains` 聚合净 Greeks（无需 ClickHouse） |
+| 7  | `get_market_hours`            | `GET /markets`                             |
+| 8  | `get_market_hour_single`      | `GET /markets/{market_id}`                 |
+| 9  | `get_movers`                  | `GET /movers/{symbol_id}`                  |
+| 10 | `search_instruments`          | `GET /instruments`                         |
+| 11 | `get_instrument_by_cusip`     | `GET /instruments/{cusip_id}`              |
+| 12 | `health_check`                | 本地 —— token 寿命 + 缓存健康              |
+| 13 | `get_server_info`             | 本地 —— 版本号 + 支持的 tool 列表          |
+| 14 | `get_cache_stats`             | 本地 —— 缓存后端（memory/clickhouse）+ 实时条目数 |
+| 15 | `get_iv_percentile`           | 本地 —— 基于 `iv_history` 计算 ATM IV 历史百分位（`refresh=True` 拉取最新 chain） |
+| 16 | `get_iv_surface`              | 本地 —— 基于 `iv_history` 输出 30d/60d/90d 多桶 ATM IV 期限结构 |
+| 17 | `get_streaming_snapshot` 🧪    | Streamer WebSocket —— 有界快照（实验性）   |
 
 每个 tool 的详细说明见下文。
 
@@ -235,6 +237,22 @@ uv run pytest --cov                              # 整体 ≥85%，关键模块 
   `{expirationList: [{expirationDate, daysToExpiration, expirationType,
   settlementType}, ...]}`
 - **示例**：`{"symbol": "VOO"}`
+
+##### `get_option_greeks_summary` —— 净 Greeks 聚合（无需 ClickHouse）
+
+- **何时用**：一眼读取净持仓暴露 —— 把整条链上每个合约的
+  `delta` / `gamma` / `theta` / `vega` / `rho` 聚合为净值，按 call/put
+  和按到期日拆分，或锁定单个到期日，而不必逐个翻看上百个合约。
+- **无需 ClickHouse**：Greeks 直接从实时拉取的 chain 计算（数据本就在
+  `get_option_chain` 里），因此在默认 memory 后端即可使用。
+- **入参**：`underlying`、`expiry?`（`YYYY-MM-DD`，限定单个到期日）、
+  `weighting?`（`open_interest` 默认 / `equal`）。`open_interest` 按未平仓
+  量加权，当所有合约都无未平仓量时自动降级为等权（并附 warning）。
+- **返回**：
+  `{underlying, expiry_filter, weighting, requested_weighting,
+  contract_count, net: {delta, gamma, theta, vega, rho},
+  by_side: {CALL: {...}, PUT: {...}}, by_expiry: {<date>: {...}}, warning}`
+- **示例**：`{"underlying": "AAPL", "weighting": "open_interest"}`
 
 ##### `get_market_hours` —— 多市场交易时段
 
@@ -309,10 +327,25 @@ uv run pytest --cov                              # 整体 ≥85%，关键模块 
 - **入参**：无。
 - **返回**：
   `{server_version, mcp_sdk_version, schwab_py_version,
-  supported_tools: [...15 个 tool 名], platform_supported_v1}`
+  supported_tools: [...17 个 tool 名], platform_supported_v1}`
 - **示例**：`{}`
 
 #### 实验性 —— 有界 streaming snapshot（1 个）
+
+##### `get_iv_surface` —— ATM IV 期限结构（基于缓存历史）
+
+- **何时用**：一次读取完整 IV 期限结构（30d / 60d / 90d）—— 前后端偏度、
+  期限结构倒挂或各桶 IV 历史百分位 —— 而不必把 `get_iv_percentile`
+  调三遍。
+- **入参**：`underlying`、`lookback_days?`（int，默认 252，范围 30–730）。
+- **返回**：
+  `{underlying, lookback_days, total_sample_count,
+  buckets: {30d|60d|90d: {current_iv, percentile_rank, sample_count,
+  min_iv, max_iv, median_iv, current_asof}}, warning}`
+- **持久化**：基于只有 **ClickHouse** 后端才保留的 `iv_history` 行构建。
+  在 memory 后端 / 缓存关闭时各桶返回空值并带
+  `warning: ["requires_clickhouse_persistence"]`，读路径永不抛错。
+- **示例**：`{"underlying": "AAPL", "lookback_days": 252}`
 
 ##### `get_streaming_snapshot` 🧪 —— 有界 WebSocket 快照
 

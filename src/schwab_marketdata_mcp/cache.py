@@ -550,6 +550,35 @@ class Cache:
             "current_asof": current_asof.isoformat() if isinstance(current_asof, date) else None,
         }
 
+    def get_iv_surface(
+        self,
+        underlying: str,
+        lookback_days: int = DEFAULT_IV_LOOKBACK_DAYS,
+    ) -> dict[str, Any]:
+        """Return the ATM IV term-structure surface across all buckets.
+
+        v0.6 T1/E6 — folds :meth:`get_iv_percentile_rank` over the three
+        supported expiry buckets (``30d`` / ``60d`` / ``90d``) so a caller
+        can read the whole surface in one shot.  Reads the durable
+        ``iv_history`` series via the backend; on the memory backend (no
+        history) every bucket comes back with ``sample_count = 0`` so the
+        calling tool can surface the persistence-requirement flag.
+        """
+        if not isinstance(underlying, str) or not underlying:
+            raise ValueError("underlying must be a non-empty str")
+        buckets: dict[str, dict[str, Any]] = {}
+        total_samples = 0
+        for bucket in ("30d", "60d", "90d"):
+            rank = self.get_iv_percentile_rank(underlying, bucket, lookback_days)
+            total_samples += int(rank.get("sample_count") or 0)
+            buckets[bucket] = rank
+        return {
+            "underlying": underlying,
+            "lookback_days": lookback_days,
+            "buckets": buckets,
+            "total_sample_count": total_samples,
+        }
+
     def _fetch_iv_history_window(
         self,
         underlying: str,

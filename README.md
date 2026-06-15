@@ -23,8 +23,9 @@
 >   budget; current usage ≈ 5%.
 
 Production-grade **Model Context Protocol (MCP)** server that exposes the
-Charles Schwab **Market Data Production** API as **15 tools** (10 endpoints + 4
-meta tools + 1 experimental streaming snapshot tool) for use inside Cursor,
+Charles Schwab **Market Data Production** API as **17 tools** (10 endpoints +
+2 derived option-analytics + 3 meta tools + 1 cached-history analytics +
+1 experimental streaming snapshot tool) for use inside Cursor,
 Claude Code, and any other MCP-aware agent.
 
 > **Read-only** — this project calls only the Schwab Market Data API. It does
@@ -141,7 +142,7 @@ Claude Desktop), see [`docs/REGISTER.md`](docs/REGISTER.md).
   | `memory` | ✅ | none (stdlib) | In-process LRU + TTL, concurrency-safe, non-blocking, no files. Derived-analysis history (`option_chain_snapshots` / `iv_history` / candle OLAP) keeps **no durable store** — those degrade gracefully (`get_iv_percentile` returns a `cache_disabled`/empty payload, snapshot writes report `_cached_rows: 0`). |
   | `clickhouse` | — | `pip install schwab-marketdata-mcp[clickhouse]` + `SCHWAB_CLICKHOUSE_URL` | Durably persists the derived-analysis time series and serves the real ATM-IV / IV-percentile / candle-OLAP analytics. |
 
-  All 15 tools keep working out of the box on the default memory backend; only
+  All 17 tools keep working out of the box on the default memory backend; only
   the IV-history-backed analytics require the ClickHouse extra to retain
   cross-session history.
 - **Health probe** (`schwab_marketdata_mcp.health`) returns distinct exit
@@ -162,7 +163,7 @@ Claude Desktop), see [`docs/REGISTER.md`](docs/REGISTER.md).
   refuses to write Schwab data into a public repo (it calls
   `gh repo view --json isPrivate` first).
 
-### Tooling surface — 14 MCP tools
+### Tooling surface — 17 MCP tools
 
 At-a-glance map of name → endpoint:
 
@@ -173,16 +174,18 @@ At-a-glance map of name → endpoint:
 | 3  | `get_price_history`           | `GET /pricehistory`                        |
 | 4  | `get_option_chain`            | `GET /chains`                              |
 | 5  | `get_option_expiration_chain` | `GET /expirationchain`                     |
-| 6  | `get_market_hours`            | `GET /markets`                             |
-| 7  | `get_market_hour_single`      | `GET /markets/{market_id}`                 |
-| 8  | `get_movers`                  | `GET /movers/{symbol_id}`                  |
-| 9  | `search_instruments`          | `GET /instruments`                         |
-| 10 | `get_instrument_by_cusip`     | `GET /instruments/{cusip_id}`              |
-| 11 | `health_check`                | local — token age + cache health           |
-| 12 | `get_server_info`             | local — versions + supported tool list     |
-| 13 | `get_cache_stats`             | local — cache backend (memory/clickhouse) + live entry count |
-| 14 | `get_iv_percentile`           | local — ATM IV percentile rank from cached `iv_history` (refresh=True pulls fresh chain) |
-| 15 | `get_streaming_snapshot` 🧪    | Streamer WebSocket — bounded snapshot      |
+| 6  | `get_option_greeks_summary`   | derived — net Greeks from `GET /chains` (no ClickHouse needed) |
+| 7  | `get_market_hours`            | `GET /markets`                             |
+| 8  | `get_market_hour_single`      | `GET /markets/{market_id}`                 |
+| 9  | `get_movers`                  | `GET /movers/{symbol_id}`                  |
+| 10 | `search_instruments`          | `GET /instruments`                         |
+| 11 | `get_instrument_by_cusip`     | `GET /instruments/{cusip_id}`              |
+| 12 | `health_check`                | local — token age + cache health           |
+| 13 | `get_server_info`             | local — versions + supported tool list     |
+| 14 | `get_cache_stats`             | local — cache backend (memory/clickhouse) + live entry count |
+| 15 | `get_iv_percentile`           | local — ATM IV percentile rank from cached `iv_history` (refresh=True pulls fresh chain) |
+| 16 | `get_iv_surface`              | local — ATM IV surface across 30d/60d/90d buckets from cached `iv_history` |
+| 17 | `get_streaming_snapshot` 🧪    | Streamer WebSocket — bounded snapshot      |
 
 Detailed per-tool reference is below.
 
@@ -243,6 +246,26 @@ Detailed per-tool reference is below.
   `{expirationList: [{expirationDate, daysToExpiration, expirationType,
   settlementType}, ...]}`
 - **Example**: `{"symbol": "VOO"}`
+
+##### `get_option_greeks_summary` — net Greeks aggregation (no ClickHouse needed)
+
+- **When**: read net dealer/book positioning at a glance — aggregate
+  `delta` / `gamma` / `theta` / `vega` / `rho` across the live chain
+  instead of eyeballing hundreds of contracts; split by call/put and by
+  expiry; isolate a single expiration.
+- **Works without ClickHouse**: the Greeks are computed live from the
+  freshly-fetched chain (the data is already in `get_option_chain`), so
+  this tool is useful on the default memory backend.
+- **Input**: `underlying`, `expiry?` (`YYYY-MM-DD` — restrict to one
+  expiration), `weighting?` (`open_interest` default / `equal`).
+  `open_interest` weights each Greek by open interest and falls back to
+  equal weighting (with a warning) when no contract reports OI.
+- **Returns**:
+  `{underlying, expiry_filter, weighting, requested_weighting,
+  contract_count, net: {delta, gamma, theta, vega, rho},
+  by_side: {CALL: {...}, PUT: {...}}, by_expiry: {<date>: {...}},
+  warning}`
+- **Example**: `{"underlying": "AAPL", "weighting": "open_interest"}`
 
 ##### `get_market_hours` — multi-market session hours
 
@@ -318,10 +341,27 @@ Detailed per-tool reference is below.
 - **Input**: none.
 - **Returns**:
   `{server_version, mcp_sdk_version, schwab_py_version,
-  supported_tools: [...13 tool names], platform_supported_v1}`
+  supported_tools: [...17 tool names], platform_supported_v1}`
 - **Example**: `{}`
 
 #### Experimental — bounded streaming snapshot (1)
+
+##### `get_iv_surface` — ATM IV term-structure surface (cached history)
+
+- **When**: read the whole IV term structure (30d / 60d / 90d) at once
+  — front-vs-back skew, term-structure inversion, or IV-rank per bucket
+  — instead of calling `get_iv_percentile` three times.
+- **Input**: `underlying`, `lookback_days?` (int, default 252, 30–730).
+- **Returns**:
+  `{underlying, lookback_days, total_sample_count,
+  buckets: {30d|60d|90d: {current_iv, percentile_rank, sample_count,
+  min_iv, max_iv, median_iv, current_asof}}, warning}`
+- **Persistence**: built from durable `iv_history` rows that only the
+  **ClickHouse** backend retains. On the memory backend / disabled cache
+  the buckets come back empty with
+  `warning: ["requires_clickhouse_persistence"]` — the read path never
+  raises.
+- **Example**: `{"underlying": "AAPL", "lookback_days": 252}`
 
 ##### `get_streaming_snapshot` 🧪 — bounded WebSocket snapshot
 

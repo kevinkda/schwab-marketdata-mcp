@@ -21,7 +21,9 @@ v0.4 P1/C
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
+import math
+from dataclasses import dataclass
+from datetime import UTC, date, datetime
 from typing import Any
 
 from ..cache import (
@@ -34,8 +36,10 @@ from ..cache import (
 )
 from ..models import (
     GetIvPercentileInput,
+    GetIvSurfaceInput,
     GetOptionChainInput,
     GetOptionExpirationChainInput,
+    GetOptionGreeksSummaryInput,
 )
 from . import _enums
 from ._runtime import call_endpoint
@@ -49,6 +53,10 @@ log = logging.getLogger(__name__)
 _WARN_CACHE_DISABLED = "cache_disabled"
 _WARN_SAMPLE_SPARSE = "sample_count_below_30"
 _MIN_SAMPLES_FOR_RANK = 30
+
+# v0.6 T1/E1 — Greeks aggregation.  The five first-order/second-order
+# Greeks we fold across the chain.
+_GREEK_KEYS: tuple[str, ...] = ("delta", "gamma", "theta", "vega", "rho")
 
 
 async def get_option_chain_impl(args: GetOptionChainInput) -> dict[str, Any]:
@@ -278,8 +286,228 @@ async def _refresh_iv_for_underlying(underlying: str, cache: Cache) -> dict[str,
     }
 
 
+# ---------------------------------------------------------------------------
+# v0.6 T1/E1 — get_option_greeks_summary (16th MCP tool)
+# ---------------------------------------------------------------------------
+
+
+async def get_option_greeks_summary_impl(
+    args: GetOptionGreeksSummaryInput,
+) -> dict[str, Any]:
+    """Aggregate per-contract Greeks from a live option chain.
+
+    Works **without** ClickHouse: the chain is fetched via the cache-aware
+    ``get_option_chain`` flow and the Greeks are computed in-process.  No
+    durable history is required.
+
+    The response shape::
+
+        {
+          "underlying": "AAPL",
+          "expiry_filter": "2026-06-19" | None,
+          "weighting": "open_interest" | "equal",
+          "contract_count": 412,
+          "net": {"delta": .., "gamma": .., "theta": .., "vega": .., "rho": ..},
+          "by_side": {"CALL": {...net...}, "PUT": {...net...}},
+          "by_expiry": {"2026-06-19": {...net...}, ...},
+          "warning": [...] | None,
+        }
+    """
+    underlying = args.underlying
+    expiry_filter = args.expiry.date().isoformat() if args.expiry is not None else None
+
+    chain_args = GetOptionChainInput(symbol=underlying)
+    payload = await get_option_chain_impl(chain_args)
+
+    contracts = flatten_option_chain_response(payload)
+    # Restrict to the requested expiry when supplied.
+    if expiry_filter is not None:
+        contracts = [c for c in contracts if _contract_expiry_iso(c) == expiry_filter]
+
+    warnings: list[str] = []
+    fell_back = _aggregate_greeks(contracts, args.weighting)
+    if fell_back.effective_weighting != args.weighting:
+        warnings.append("open_interest_unavailable_equal_weighted")
+
+    return {
+        "underlying": underlying,
+        "expiry_filter": expiry_filter,
+        "weighting": fell_back.effective_weighting,
+        "requested_weighting": args.weighting,
+        "contract_count": len(contracts),
+        "net": fell_back.net,
+        "by_side": fell_back.by_side,
+        "by_expiry": fell_back.by_expiry,
+        "warning": warnings or None,
+    }
+
+
+def _contract_expiry_iso(contract: dict[str, Any]) -> str | None:
+    expiry = contract.get("expiry")
+    if isinstance(expiry, date):
+        return expiry.isoformat()
+    return None
+
+
+@dataclass(frozen=True)
+class _GreeksAggregate:
+    net: dict[str, float | None]
+    by_side: dict[str, dict[str, float | None]]
+    by_expiry: dict[str, dict[str, float | None]]
+    effective_weighting: str
+
+
+def _aggregate_greeks(
+    contracts: list[dict[str, Any]],
+    weighting: str,
+) -> _GreeksAggregate:
+    """Fold a flattened contract list into net Greeks.
+
+    ``open_interest`` weighting falls back to ``equal`` for the *whole*
+    summary when no contract carries open interest, so the returned
+    ``effective_weighting`` may differ from the requested one.
+    """
+    has_oi = any(_safe_positive_int(c.get("openInterest")) > 0 for c in contracts)
+    effective = "equal" if (weighting == "open_interest" and not has_oi) else weighting
+
+    net = _weighted_net(contracts, effective)
+    by_side: dict[str, dict[str, float | None]] = {}
+    for side in ("CALL", "PUT"):
+        side_contracts = [c for c in contracts if str(c.get("call_put")) == side]
+        by_side[side] = _weighted_net(side_contracts, effective)
+    by_expiry: dict[str, dict[str, float | None]] = {}
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for c in contracts:
+        exp = _contract_expiry_iso(c)
+        if exp is None:
+            continue
+        grouped.setdefault(exp, []).append(c)
+    by_expiry = {exp: _weighted_net(items, effective) for exp, items in sorted(grouped.items())}
+    return _GreeksAggregate(
+        net=net,
+        by_side=by_side,
+        by_expiry=by_expiry,
+        effective_weighting=effective,
+    )
+
+
+def _weighted_net(
+    contracts: list[dict[str, Any]],
+    weighting: str,
+) -> dict[str, float | None]:
+    """Net (weighted) Greek per key across ``contracts``.
+
+    A contract contributes a Greek only when that Greek parses to a
+    finite float.  ``open_interest`` weighting uses each contract's open
+    interest (contracts without OI contribute zero weight); ``equal``
+    weighting uses a weight of 1 per contract that reports the Greek.
+    Returns ``None`` for a Greek when no contract reported it.
+    """
+    out: dict[str, float | None] = {}
+    for key in _GREEK_KEYS:
+        weighted_sum = 0.0
+        total_weight = 0.0
+        seen = False
+        for c in contracts:
+            value = _safe_finite_float(c.get(key))
+            if value is None:
+                continue
+            seen = True
+            weight = float(_safe_positive_int(c.get("openInterest"))) if weighting == "open_interest" else 1.0
+            weighted_sum += value * weight
+            total_weight += weight
+        if not seen:
+            out[key] = None
+        elif total_weight <= 0:
+            # Greek seen but zero total weight (all OI zero in an
+            # OI-weighted bucket) — degrade to a simple mean so the value
+            # is still meaningful rather than a divide-by-zero.
+            vals = [v for v in (_safe_finite_float(c.get(key)) for c in contracts) if v is not None]
+            out[key] = round(sum(vals) / len(vals), 6) if vals else None
+        else:
+            out[key] = round(weighted_sum / total_weight, 6)
+    return out
+
+
+def _safe_positive_int(value: Any) -> int:
+    try:
+        ivalue = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return ivalue if ivalue > 0 else 0
+
+
+def _safe_finite_float(value: Any) -> float | None:
+    try:
+        fvalue = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(fvalue):  # NaN / inf guard
+        return None
+    return fvalue
+
+
+# ---------------------------------------------------------------------------
+# v0.6 T1/E6 — get_iv_surface (17th MCP tool)
+# ---------------------------------------------------------------------------
+
+_WARN_REQUIRES_CH = "requires_clickhouse_persistence"
+
+
+async def get_iv_surface_impl(args: GetIvSurfaceInput) -> dict[str, Any]:
+    """Return the ATM IV term-structure surface across expiry buckets.
+
+    Read-only: depends on durable ``iv_history`` rows that only the
+    ClickHouse backend retains.  When the cache is disabled or the memory
+    backend yields no history, the tool flags
+    ``requires_clickhouse_persistence=True`` and returns empty buckets
+    rather than raising.
+    """
+    underlying = args.underlying
+    lookback = args.lookback_days
+
+    cache = get_cache()
+    if cache is None:
+        return _empty_surface(underlying, lookback, [_WARN_CACHE_DISABLED, _WARN_REQUIRES_CH])
+
+    surface = cache.get_iv_surface(underlying, lookback)
+    warnings: list[str] = []
+    if int(surface.get("total_sample_count") or 0) == 0:
+        warnings.append(_WARN_REQUIRES_CH)
+    surface["warning"] = warnings or None
+    return surface
+
+
+def _empty_surface(underlying: str, lookback: int, warnings: list[str]) -> dict[str, Any]:
+    empty_bucket = {
+        "underlying": underlying,
+        "expiry_bucket": None,
+        "current_iv": None,
+        "percentile_rank": None,
+        "sample_count": 0,
+        "lookback_days": lookback,
+        "min_iv": None,
+        "max_iv": None,
+        "median_iv": None,
+        "current_asof": None,
+    }
+    return {
+        "underlying": underlying,
+        "lookback_days": lookback,
+        "buckets": {
+            "30d": {**empty_bucket, "expiry_bucket": "30d"},
+            "60d": {**empty_bucket, "expiry_bucket": "60d"},
+            "90d": {**empty_bucket, "expiry_bucket": "90d"},
+        },
+        "total_sample_count": 0,
+        "warning": warnings or None,
+    }
+
+
 __all__ = [
     "get_iv_percentile_impl",
+    "get_iv_surface_impl",
     "get_option_chain_impl",
     "get_option_expiration_chain_impl",
+    "get_option_greeks_summary_impl",
 ]

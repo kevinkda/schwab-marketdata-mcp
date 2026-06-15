@@ -128,13 +128,37 @@ async def test_health_check_offline_safe(fake_client: None) -> None:
     assert out["rate_limit_remaining_per_min"] == 120
 
 
-async def test_get_server_info_includes_15_tools(fake_client: None) -> None:
+async def test_get_server_info_includes_17_tools(fake_client: None) -> None:
     out = await server.get_server_info()
-    assert len(out["supported_tools"]) == 15
+    assert len(out["supported_tools"]) == 17
+    assert "get_option_greeks_summary" in out["supported_tools"]
+    assert "get_iv_surface" in out["supported_tools"]
     assert "compatible_skill_version_range" not in out  # plan §3.1 — not exposed
     from schwab_marketdata_mcp import __version__ as _v
 
     assert out["server_version"] == _v
+
+
+async def test_server_get_option_greeks_summary_wrapper(fake_client: None) -> None:
+    """server.get_option_greeks_summary_ validates + delegates over the
+    fixtures backend (delta-only CALL fixture)."""
+    out = await server.get_option_greeks_summary_("AAPL")
+    assert out["underlying"] == "AAPL"
+    assert out["weighting"] in ("open_interest", "equal")
+    assert "net" in out and "by_side" in out and "by_expiry" in out
+
+
+async def test_server_get_option_greeks_summary_equal_weighting(fake_client: None) -> None:
+    out = await server.get_option_greeks_summary_("AAPL", weighting="equal")
+    assert out["requested_weighting"] == "equal"
+
+
+async def test_server_get_iv_surface_wrapper(fake_client: None) -> None:
+    """server.get_iv_surface_ validates + delegates; the fixtures run has
+    no iv_history so it degrades to requires_clickhouse_persistence."""
+    out = await server.get_iv_surface_("AAPL")
+    assert set(out["buckets"].keys()) == {"30d", "60d", "90d"}
+    assert "requires_clickhouse_persistence" in (out["warning"] or [])
 
 
 # ---------------------------------------------------------------------------
