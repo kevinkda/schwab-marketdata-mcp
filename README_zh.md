@@ -119,16 +119,25 @@ uv run pytest --cov                              # 整体 ≥85%，关键模块 
   `SCHWAB_RATE_LIMIT_PER_MIN` 调整。
 - **自适应重试**：对 `429` 与 `5xx` 默认重试 2 次，指数退避，并解析
   `Retry-After` 头。
-- **DuckDB 本地缓存** —— 单文件库 `${XDG_STATE_HOME}/schwab-marketdata-mcp/cache.duckdb`，
-  自动短路 5 个可缓存 tool 的重复读取（`get_quote`、`get_price_history`、
-  `get_option_chain`、`search_instruments`、`get_instrument_by_cusip`）。
-  按表分级 TTL：quotes 60 s / option chain 5 m / instruments 24 h /
-  price history 「历史 candle 永久 + 最近 1 h 内若超过 60 s 强制刷新」。
-  缓存**默认关闭（需显式开启）**——不创建 DuckDB 文件，每次工具调用都实时打
-  Schwab。通过 `SCHWAB_CACHE_ENABLED=true`（也接受 `1` / `yes` / `on`）显式启用，
+- **可插拔缓存** —— 后端无关的响应 + 派生分析缓存，自动短路 5 个可缓存 tool
+  的重复读取（`get_quote`、`get_price_history`、`get_option_chain`、
+  `search_instruments`、`get_instrument_by_cusip`）。按表分级 TTL：quotes
+  60 s / option chain 5 m / instruments 24 h / price history 60 s。
+  缓存**默认关闭（需显式开启）**——每次工具调用都实时打 Schwab。通过
+  `SCHWAB_CACHE_ENABLED=true`（也接受 `1` / `yes` / `on`）显式启用，
   `SCHWAB_CACHE_BYPASS=1` 单次绕过。关闭时可缓存 tool 返回
   `_cache_status: "disabled"`，响应结构其余不变。
-  这一层也为 Shakeout 研究 playbook 提供本地 OLAP 查询接口。
+
+  ⚠️ **重大变更（v0.5.0）：** 移除内置 DuckDB 缓存，改为通过
+  `SCHWAB_CACHE_BACKEND` 选择的可插拔后端：
+
+  | 后端 | 默认 | 依赖 | 说明 |
+  | --- | --- | --- | --- |
+  | `memory` | ✅ | 无（stdlib） | 进程内 LRU + TTL，并发安全、非阻塞、无文件。派生分析历史（`option_chain_snapshots` / `iv_history` / candle OLAP）不保留持久存储，优雅降级（`get_iv_percentile` 返回 `cache_disabled`/空载荷，快照写入 `_cached_rows: 0`）。 |
+  | `clickhouse` | — | `pip install schwab-marketdata-mcp[clickhouse]` + `SCHWAB_CLICKHOUSE_URL` | 持久化派生分析时间序列，提供真实的 ATM-IV / IV 百分位 / candle OLAP 分析。 |
+
+  默认 memory 后端下 15 个 tool 全部开箱即用；仅依赖 IV 历史的分析需装
+  ClickHouse extra 才能保留跨会话历史。
 - **健康检查**（`schwab_marketdata_mcp.health`）针对 token 寿命、丢失、
   格式错误、权限不安全等情况返回不同退出码，可直接接入 cron / launchd
   告警。
@@ -164,7 +173,7 @@ uv run pytest --cov                              # 整体 ≥85%，关键模块 
 | 10 | `get_instrument_by_cusip`     | `GET /instruments/{cusip_id}`              |
 | 11 | `health_check`                | 本地 —— token 寿命 + 缓存健康              |
 | 12 | `get_server_info`             | 本地 —— 版本号 + 支持的 tool 列表          |
-| 13 | `get_cache_stats`             | 本地 —— DuckDB 缓存行数 / 体积 / 命中率   |
+| 13 | `get_cache_stats`             | 本地 —— 缓存后端（memory/clickhouse）+ 实时条目数 |
 | 14 | `get_iv_percentile`           | 本地 —— 基于 `iv_history` 计算 ATM IV 历史百分位（`refresh=True` 拉取最新 chain） |
 | 15 | `get_streaming_snapshot` 🧪    | Streamer WebSocket —— 有界快照（实验性）   |
 

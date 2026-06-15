@@ -8,17 +8,18 @@ single-element collections, and cache TTL / sparse-data edges.
 from __future__ import annotations
 
 from datetime import date, timedelta
-from pathlib import Path
 
 import pytest
 
 from schwab_marketdata_mcp import cache
+from schwab_marketdata_mcp.cache_backend import MemoryBackend
 from schwab_marketdata_mcp.errors import SchwabValidationError
 from schwab_marketdata_mcp.models import (
     MAX_STREAMING_SNAPSHOT_SYMBOLS,
     MAX_SYMBOLS_PER_BATCH,
     validate_tool_input,
 )
+from tests.conftest import make_stateful_clickhouse_cache
 
 # ---------------------------------------------------------------------------
 # Symbol-batch boundaries (get_quotes)
@@ -172,28 +173,26 @@ def test_boundary_symbol_empty_rejected() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_boundary_cache_ttl_zero_expires_immediately(tmp_path: Path) -> None:
+def test_boundary_cache_ttl_zero_expires_immediately() -> None:
     """ttl_seconds=0 means any positive age is expired."""
     import time
 
-    with cache.Cache(tmp_path / "c.duckdb") as c:
+    with cache.Cache(backend=MemoryBackend()) as c:
         c.put_quote("AAPL", {"AAPL": {"quote": {"lastPrice": 1.0}}}, ttl_seconds=0)
         time.sleep(0.02)
         assert c.get_quote("AAPL") is None
 
 
-def test_boundary_cache_ttl_large_keeps_fresh(tmp_path: Path) -> None:
+def test_boundary_cache_ttl_large_keeps_fresh() -> None:
     """A large TTL keeps the entry fresh on immediate read."""
-    with cache.Cache(tmp_path / "c.duckdb") as c:
+    with cache.Cache(backend=MemoryBackend()) as c:
         c.put_quote("AAPL", {"AAPL": {"quote": {"lastPrice": 1.0}}}, ttl_seconds=10_000)
         assert c.get_quote("AAPL") is not None
 
 
 def test_boundary_hourly_breakdown_min_hours() -> None:
     """hourly_breakdown rejects hours < 1 (lower-bound guard)."""
-    import tempfile
-
-    with cache.Cache(Path(tempfile.mkdtemp()) / "c.duckdb") as c:
+    with cache.Cache(backend=MemoryBackend()) as c:
         with pytest.raises(ValueError):
             c.hourly_breakdown(0)
 
@@ -203,17 +202,17 @@ def test_boundary_hourly_breakdown_min_hours() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_boundary_iv_rank_empty_history_null_payload(tmp_path: Path) -> None:
+def test_boundary_iv_rank_empty_history_null_payload() -> None:
     """No history → null percentile payload with sample_count 0."""
-    with cache.Cache(tmp_path / "c.duckdb") as c:
+    with cache.Cache(backend=MemoryBackend()) as c:
         out = c.get_iv_percentile_rank("AAPL", "30d", 252)
     assert out["sample_count"] == 0
     assert out["percentile_rank"] is None
 
 
-def test_boundary_iv_rank_single_observation_neutral_50(tmp_path: Path) -> None:
+def test_boundary_iv_rank_single_observation_neutral_50() -> None:
     """A single observation yields the neutral 50.0 rank (no distribution)."""
-    with cache.Cache(tmp_path / "c.duckdb") as c:
+    with make_stateful_clickhouse_cache() as c:
         c._upsert_iv_history("AAPL", date(2026, 5, 1), "30d", 0.30, 5)
         out = c.get_iv_percentile_rank("AAPL", "30d", 252)
     assert out["sample_count"] == 1

@@ -94,6 +94,125 @@ def write_fixture(tmp_path: Path) -> Any:
     return _write
 
 
+def make_clickhouse_cache() -> tuple[Any, Any]:
+    """Build a ``Cache`` backed by a mocked ClickHouse client (no live CH).
+
+    Returns ``(cache, mock_client)``.  Every ``insert`` succeeds, so derived
+    history durably persists; ``query`` returns canned rows the test sets via
+    ``mock_client.query.return_value.result_rows``.  Used by every test that
+    needs the analytics (snapshot / iv_history / candle) read-back paths.
+    """
+    from unittest.mock import MagicMock
+
+    from schwab_marketdata_mcp.cache import Cache
+    from schwab_marketdata_mcp.cache_backend import ClickHouseBackend
+
+    client = MagicMock()
+    client.command.return_value = None
+    client.insert.return_value = None
+    result = MagicMock()
+    result.result_rows = []
+    client.query.return_value = result
+    return Cache(backend=ClickHouseBackend(url="clickhouse://x", client=client)), client
+
+
+def clickhouse_inserted_rows(client: Any, *, series: str | None = None) -> list[dict[str, Any]]:
+    """Decode JSON payloads inserted into the timeseries table by the backend.
+
+    ``ClickHouseBackend.append_timeseries`` inserts ``[[series, json_payload]]``;
+    ``set`` inserts response-cache rows (4-col) which we skip here.  When
+    ``series`` is given, only rows for that series are returned.
+    """
+    rows: list[dict[str, Any]] = []
+    for call in client.insert.call_args_list:
+        args = call.args
+        if len(args) < 2:
+            continue
+        data = args[1]
+        col_names = call.kwargs.get("column_names") or []
+        if "payload" not in col_names:
+            continue  # response-cache insert, not a timeseries row
+        for entry in data:
+            if series is not None and entry[0] != series:
+                continue
+            rows.append(json.loads(entry[1]))
+    return rows
+
+
+def seed_clickhouse_query_rows(client: Any, rows: list[dict[str, Any]]) -> None:
+    """Make the mock ClickHouse client's ``query`` return *rows* as payloads.
+
+    Mirrors ``ClickHouseBackend.query_timeseries`` which reads a single
+    ``payload`` column per row.
+    """
+    from unittest.mock import MagicMock
+
+    result = MagicMock()
+    result.result_rows = [[json.dumps(r)] for r in rows]
+    client.query.return_value = result
+
+
+def make_stateful_clickhouse_cache() -> Any:
+    """Build a ``Cache`` over a *stateful* fake ClickHouse client.
+
+    The fake stores timeseries rows in-process and serves them back through
+    ``query`` filtered by series, so analytics round-trips (snapshot →
+    aggregate_atm_iv → iv_history → get_iv_percentile_rank, and candle OLAP)
+    work end-to-end without a live ClickHouse.  Honours the real
+    ``ClickHouseBackend`` SQL parameter contract: it inspects the bound
+    ``{s:String}`` series name from ``parameters`` to scope the read.
+    """
+    from schwab_marketdata_mcp.cache import Cache
+    from schwab_marketdata_mcp.cache_backend import ClickHouseBackend
+
+    class _StatefulClient:
+        def __init__(self) -> None:
+            self.timeseries: list[tuple[str, str]] = []  # (series, payload_json)
+            self.response: dict[tuple[str, str], str] = {}  # (table, key) -> raw_json
+
+        def command(self, *_a: Any, **_k: Any) -> None:
+            return None
+
+        def insert(self, table: str, data: list[list[Any]], *, column_names: list[str]) -> None:
+            if "payload" in column_names:
+                for row in data:
+                    self.timeseries.append((row[0], row[1]))
+            else:
+                # response cache: [table_name, cache_key, raw_json, ttl]
+                for row in data:
+                    self.response[(row[0], row[1])] = row[2]
+
+        def query(self, sql: str, *, parameters: dict[str, Any] | None = None) -> Any:
+            from unittest.mock import MagicMock
+
+            params = parameters or {}
+            result = MagicMock()
+            if "FROM schwab_md_timeseries" in sql and "payload" in sql:
+                series = params.get("s")
+                limit = int(params.get("n", 1000))
+                payloads = [p for (s, p) in self.timeseries if s == series][:limit]
+                result.result_rows = [[p] for p in payloads]
+            elif "FROM schwab_md_response_cache" in sql and "raw_json" in sql:
+                key = (params.get("t"), params.get("k"))
+                raw = self.response.get(key)
+                result.result_rows = [[raw]] if raw is not None else []
+            elif "count()" in sql:
+                result.result_rows = [[len(self.response)]]
+            else:
+                result.result_rows = []
+            return result
+
+    client = _StatefulClient()
+    return Cache(backend=ClickHouseBackend(url="clickhouse://x", client=client))
+
+
+def make_stateful_clickhouse_cache_with_client() -> Any:
+    """Like :func:`make_stateful_clickhouse_cache` but also returns the fake
+    client so tests can inspect inserts or plant timeseries rows directly."""
+    cache = make_stateful_clickhouse_cache()
+    return cache, cache.backend._client
+
+
 @pytest.fixture(autouse=True)
 def _no_real_creds(monkeypatch: pytest.MonkeyPatch) -> None:
     """Hard-block any test from accidentally using real Schwab credentials."""

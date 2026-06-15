@@ -22,7 +22,7 @@ singleton reset.  No real Schwab traffic.
 
 from __future__ import annotations
 
-import os
+from collections.abc import Iterator
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -38,6 +38,7 @@ from schwab_marketdata_mcp.cache import (
 from schwab_marketdata_mcp.models import GetIvPercentileInput
 from schwab_marketdata_mcp.tools import _runtime as rt
 from schwab_marketdata_mcp.tools.options import get_iv_percentile_impl
+from tests.conftest import make_stateful_clickhouse_cache
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -65,20 +66,20 @@ def _seed_history(
     bucket: str,
     series: list[tuple[date, float | None, int]],
 ) -> None:
-    """Insert a synthetic IV time-series directly into ``iv_history``."""
+    """Insert a synthetic IV time-series via the durable history writer."""
     for asof, iv, samples in series:
         cache._upsert_iv_history(underlying, asof, bucket, iv, samples)
 
 
 @pytest.fixture(autouse=True)
-def _isolated_cache_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Each test gets a fresh on-disk DuckDB plus a clean singleton —
-    avoids cross-test bleed and removes the need for ``reset_cache_singleton``
-    boilerplate inside every test."""
+def _isolated_cache_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Each test gets a fresh stateful ClickHouse-backed cache singleton so
+    derived-analysis history (snapshots / iv_history) durably round-trips
+    without a live ClickHouse — and a clean reset to avoid cross-test bleed."""
     monkeypatch.setenv("SCHWAB_CACHE_ENABLED", "1")
     monkeypatch.setenv("SCHWAB_CACHE_BYPASS", "0")
-    monkeypatch.setenv("SCHWAB_CACHE_PATH", str(tmp_path / "c.duckdb"))
     cache_mod.reset_cache_singleton()
+    cache_mod._singleton = make_stateful_clickhouse_cache()
     yield
     cache_mod.reset_cache_singleton()
 
@@ -142,60 +143,55 @@ def test_compute_atm_iv_for_bucket_drops_rows_missing_iv() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_aggregate_atm_iv_writes_rows_for_all_three_buckets(tmp_path: Path) -> None:
+def test_aggregate_atm_iv_writes_rows_for_all_three_buckets() -> None:
     """One snapshot with contracts at 30/60/90-day expiries → three
     iv_history rows are written, one per bucket label."""
-    db = tmp_path / "agg.duckdb"
     asof = date(2026, 5, 25)
     snap = datetime(2026, 5, 25, 14, 30, tzinfo=UTC)
     contracts = []
     for dte, iv in [(30, 0.30), (60, 0.28), (90, 0.27)]:
         expiry = asof + timedelta(days=dte)
-        contracts.append(
-            {
-                "expiry": expiry,
-                "strike": 190.0,
-                "call_put": "CALL",
-                "implied_vol": iv,
-            }
-        )
-        contracts.append(
-            {
-                "expiry": expiry,
-                "strike": 190.0,
-                "call_put": "PUT",
-                "implied_vol": iv,
-            }
-        )
-    with Cache(db) as c:
-        c.write_option_chain_snapshot("AAPL", snap, contracts)
-        atm = c.aggregate_atm_iv("AAPL", asof, snapshot_at=snap)
+        contracts.append({"expiry": expiry, "strike": 190.0, "call_put": "CALL", "implied_vol": iv})
+        contracts.append({"expiry": expiry, "strike": 190.0, "call_put": "PUT", "implied_vol": iv})
+    c = cache_mod.get_cache()
+    assert c is not None
+    c.write_option_chain_snapshot("AAPL", snap, contracts)
+    atm = c.aggregate_atm_iv("AAPL", asof, snapshot_at=snap)
     assert atm["30d"] == pytest.approx(0.30, rel=1e-6)
     assert atm["60d"] == pytest.approx(0.28, rel=1e-6)
     assert atm["90d"] == pytest.approx(0.27, rel=1e-6)
 
 
-def test_aggregate_atm_iv_handles_empty_snapshot(tmp_path: Path) -> None:
-    """No snapshot for the underlying → all three buckets return
-    ``None`` and three zero-sample rows are still written so the
-    lookback window has even calendar density."""
-    db = tmp_path / "agg.duckdb"
-    with Cache(db) as c:
-        atm = c.aggregate_atm_iv("AAPL", date(2026, 5, 25))
+def test_aggregate_atm_iv_handles_empty_snapshot() -> None:
+    """No snapshot for the underlying → all three buckets return ``None``."""
+    c = cache_mod.get_cache()
+    assert c is not None
+    atm = c.aggregate_atm_iv("AAPL", date(2026, 5, 25))
     assert atm == {"30d": None, "60d": None, "90d": None}
 
 
 def test_aggregate_atm_iv_invalid_input_returns_empty() -> None:
-    """Empty underlying / unparseable date short-circuit to the
-    all-None payload — covers the input-guard branches."""
-    db_path = Path(os.environ["SCHWAB_CACHE_PATH"])
-    with Cache(db_path) as c:
-        assert c.aggregate_atm_iv("", date(2026, 5, 25)) == {"30d": None, "60d": None, "90d": None}
-        assert c.aggregate_atm_iv("AAPL", "not-a-date") == {  # type: ignore[arg-type]
-            "30d": None,
-            "60d": None,
-            "90d": None,
-        }
+    """Empty underlying / unparseable date short-circuit to the all-None payload."""
+    c = cache_mod.get_cache()
+    assert c is not None
+    assert c.aggregate_atm_iv("", date(2026, 5, 25)) == {"30d": None, "60d": None, "90d": None}
+    assert c.aggregate_atm_iv("AAPL", "not-a-date") == {  # type: ignore[arg-type]
+        "30d": None,
+        "60d": None,
+        "90d": None,
+    }
+
+
+def test_aggregate_atm_iv_memory_degrades() -> None:
+    """On the memory backend the aggregator returns all-None (no history)."""
+    from schwab_marketdata_mcp.cache_backend import MemoryBackend
+
+    c = Cache(backend=MemoryBackend())
+    snap = datetime(2026, 5, 25, 14, 30, tzinfo=UTC)
+    c.write_option_chain_snapshot(
+        "AAPL", snap, [_contract(expiry=date(2026, 6, 24), strike=190.0, call_put="CALL", iv=0.3)]
+    )
+    assert c.aggregate_atm_iv("AAPL", date(2026, 5, 25), snapshot_at=snap) == {"30d": None, "60d": None, "90d": None}
 
 
 # ---------------------------------------------------------------------------
@@ -203,11 +199,11 @@ def test_aggregate_atm_iv_invalid_input_returns_empty() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_get_iv_percentile_rank_empty_history_returns_null_payload(tmp_path: Path) -> None:
+def test_get_iv_percentile_rank_empty_history_returns_null_payload() -> None:
     """No iv_history rows → all-None payload (sample_count=0)."""
-    db = tmp_path / "rank.duckdb"
-    with Cache(db) as c:
-        out = c.get_iv_percentile_rank("AAPL", "30d", lookback_days=252)
+    c = cache_mod.get_cache()
+    assert c is not None
+    out = c.get_iv_percentile_rank("AAPL", "30d", lookback_days=252)
     assert out["sample_count"] == 0
     assert out["current_iv"] is None
     assert out["percentile_rank"] is None
@@ -215,14 +211,14 @@ def test_get_iv_percentile_rank_empty_history_returns_null_payload(tmp_path: Pat
     assert out["max_iv"] is None
 
 
-def test_get_iv_percentile_rank_single_observation_returns_neutral_50(tmp_path: Path) -> None:
+def test_get_iv_percentile_rank_single_observation_returns_neutral_50() -> None:
     """A single iv_history row → percentile undefined, but the rank is
     set to the neutral 50.0 sentinel so dashboards always show a number."""
-    db = tmp_path / "rank.duckdb"
     asof = date(2026, 5, 25)
-    with Cache(db) as c:
-        _seed_history(c, "AAPL", "30d", [(asof, 0.30, 5)])
-        out = c.get_iv_percentile_rank("AAPL", "30d", lookback_days=252)
+    c = cache_mod.get_cache()
+    assert c is not None
+    _seed_history(c, "AAPL", "30d", [(asof, 0.30, 5)])
+    out = c.get_iv_percentile_rank("AAPL", "30d", lookback_days=252)
     assert out["sample_count"] == 1
     assert out["current_iv"] == pytest.approx(0.30, rel=1e-6)
     assert out["percentile_rank"] == pytest.approx(50.0)
@@ -231,20 +227,17 @@ def test_get_iv_percentile_rank_single_observation_returns_neutral_50(tmp_path: 
     assert out["current_asof"] == asof.isoformat()
 
 
-def test_get_iv_percentile_rank_full_distribution(tmp_path: Path) -> None:
+def test_get_iv_percentile_rank_full_distribution() -> None:
     """A 100-row monotonically-rising history with the latest at the
-    top → percentile_rank == 100 (current is at-or-above every prior
-    observation)."""
-    db = tmp_path / "rank.duckdb"
+    top → percentile_rank == 100."""
     base = date(2026, 5, 25)
     series: list[tuple[date, float, int]] = []
     for i in range(100):  # i=0 oldest .. i=99 newest
-        # Older dates have smaller IV; the most-recent (i=99) is the
-        # largest, so percentile_rank must come out as 100.0.
         series.append((base - timedelta(days=99 - i), 0.10 + 0.001 * i, 50))
-    with Cache(db) as c:
-        _seed_history(c, "AAPL", "30d", series)
-        out = c.get_iv_percentile_rank("AAPL", "30d", lookback_days=252)
+    c = cache_mod.get_cache()
+    assert c is not None
+    _seed_history(c, "AAPL", "30d", series)
+    out = c.get_iv_percentile_rank("AAPL", "30d", lookback_days=252)
     assert out["sample_count"] == 100
     assert out["current_iv"] == pytest.approx(0.199, rel=1e-6)
     assert out["percentile_rank"] == pytest.approx(100.0)
@@ -252,16 +245,16 @@ def test_get_iv_percentile_rank_full_distribution(tmp_path: Path) -> None:
     assert out["max_iv"] == pytest.approx(0.199, rel=1e-6)
 
 
-def test_get_iv_percentile_rank_invalid_bucket_raises(tmp_path: Path) -> None:
+def test_get_iv_percentile_rank_invalid_bucket_raises() -> None:
     """Unsupported ``expiry_bucket`` → ValueError (input guard)."""
-    db = tmp_path / "rank.duckdb"
-    with Cache(db) as c:
-        with pytest.raises(ValueError):
-            c.get_iv_percentile_rank("AAPL", "45d")  # bucket not supported
-        with pytest.raises(ValueError):
-            c.get_iv_percentile_rank("AAPL", "30d", lookback_days=0)
-        with pytest.raises(ValueError):
-            c.get_iv_percentile_rank("", "30d")
+    c = cache_mod.get_cache()
+    assert c is not None
+    with pytest.raises(ValueError):
+        c.get_iv_percentile_rank("AAPL", "45d")  # bucket not supported
+    with pytest.raises(ValueError):
+        c.get_iv_percentile_rank("AAPL", "30d", lookback_days=0)
+    with pytest.raises(ValueError):
+        c.get_iv_percentile_rank("", "30d")
 
 
 # ---------------------------------------------------------------------------

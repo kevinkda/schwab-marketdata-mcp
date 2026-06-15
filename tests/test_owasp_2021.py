@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from schwab_marketdata_mcp import cache
+from schwab_marketdata_mcp.cache_backend import MemoryBackend
 from schwab_marketdata_mcp.errors import (
     RedactBearerFilter,
     SchwabAuthError,
@@ -25,6 +26,7 @@ from schwab_marketdata_mcp.security import (
     check_token_file_state,
     resolve_token_path,
 )
+from tests.conftest import make_clickhouse_cache
 
 SRC_ROOT = Path(__file__).resolve().parents[1] / "src" / "schwab_marketdata_mcp"
 
@@ -108,17 +110,16 @@ def test_a03_option_chain_symbol_injection_rejected(evil: str) -> None:
         GetOptionChainInput(symbol=evil)
 
 
-def test_a03_option_chain_cache_key_binding_is_safe(tmp_path: Path) -> None:
+def test_a03_option_chain_cache_key_binding_is_safe() -> None:
     """OWASP 2021 A03 — option-chain params with metachars hash to a safe key
-    and round-trip via parameterised binding (no SQL execution)."""
+    and round-trip as inert data (no SQL execution / interpolation)."""
     params = {"symbol": "AAPL", "note": "'; DROP TABLE option_chain_cache;--"}
-    with cache.Cache(tmp_path / "c.duckdb") as c:
+    with cache.Cache(backend=MemoryBackend()) as c:
         c.put_option_chain(params, {"callExpDateMap": {}})
         got = c.get_option_chain(params)
         stats = c.get_stats()
     assert got == {"callExpDateMap": {}}
-    # Table intact → the metachar param was bound, not interpolated.
-    assert "option_chain_cache" in stats.rows_per_table
+    assert stats.entries == 1
 
 
 # ---------------------------------------------------------------------------
@@ -126,11 +127,11 @@ def test_a03_option_chain_cache_key_binding_is_safe(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_a04_cache_is_best_effort_by_design(tmp_path: Path) -> None:
-    """OWASP 2021 A04 — cache failures degrade safely: a closed/failed cache
-    returns miss (None), never crashes the tool path."""
-    c = cache.Cache(tmp_path / "c.duckdb")
-    c.close()  # simulate an unavailable backend
+def test_a04_cache_is_best_effort_by_design() -> None:
+    """OWASP 2021 A04 — cache failures degrade safely: a backend whose
+    queries raise returns miss (None), never crashes the tool path."""
+    c, client = make_clickhouse_cache()
+    client.query.side_effect = RuntimeError("backend unavailable")
     # All getters must return a benign miss rather than raising.
     assert c.get_quote("AAPL") is None
     assert c.get_option_chain({"symbol": "AAPL"}) is None
@@ -219,20 +220,30 @@ def test_a08_fixtures_are_strict_json() -> None:
             json.load(fh)
 
 
-def test_a08_corrupt_cache_db_quarantined_not_trusted(tmp_path: Path) -> None:
-    """OWASP 2021 A08 — a corrupt DuckDB file is quarantined and a fresh one
-    opened, rather than trusting/parsing corrupt data."""
-    db = tmp_path / "c.duckdb"
-    db.write_text("this is not a valid duckdb file")
-    c = cache.Cache(db)
-    # Either a fresh DB was opened (conn present) or it degraded to None;
-    # either way the corrupt bytes were never trusted.
-    if c._conn is not None:
-        # A fresh, queryable DB.
-        assert c.get_quote("AAPL") is None
-    backups = list(tmp_path.glob("c.duckdb.corrupt-*"))
-    assert backups, "corrupt DB should have been quarantined aside"
-    c.close()
+def test_a08_cache_payload_integrity_round_trip() -> None:
+    """OWASP 2021 A08 — data integrity: payloads round-trip verbatim and a
+    non-dict backend payload is rejected (never trusted/parsed as a hit).
+
+    v0.5.0: the on-disk DuckDB file (and its corrupt-quarantine machinery)
+    is gone — the default backend is in-process memory with no file to
+    poison; the ClickHouse backend rejects malformed payloads on read."""
+    from unittest.mock import MagicMock
+
+    from schwab_marketdata_mcp.cache_backend import ClickHouseBackend
+
+    # Round-trip integrity on the default memory backend.
+    with cache.Cache(backend=MemoryBackend()) as c:
+        c.put_quote("AAPL", {"AAPL": {"quote": {"lastPrice": 1.0}}})
+        assert c.get_quote("AAPL") == {"AAPL": {"quote": {"lastPrice": 1.0}}}
+
+    # A corrupt (non-dict) payload from the backend is never trusted.
+    client = MagicMock()
+    client.command.return_value = None
+    result = MagicMock()
+    result.result_rows = [["not-json-at-all"]]
+    client.query.return_value = result
+    backend = ClickHouseBackend(url="clickhouse://x", client=client)
+    assert backend.get("quotes_cache", "AAPL") is None
 
 
 # ---------------------------------------------------------------------------

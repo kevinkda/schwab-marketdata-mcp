@@ -123,18 +123,27 @@ Claude Desktop), see [`docs/REGISTER.md`](docs/REGISTER.md).
   configurable via `SCHWAB_RATE_LIMIT_PER_MIN`.
 - **Adaptive retry** on `429` and `5xx` (default: 2 retries with exponential
   backoff and `Retry-After` parsing).
-- **DuckDB local cache** — single-file store at
-  `${XDG_STATE_HOME}/schwab-marketdata-mcp/cache.duckdb` short-circuits
-  repeat reads of the 5 cacheable tools (`get_quote`,
+- **Pluggable cache** — a backend-agnostic response + derived-analysis cache
+  short-circuits repeat reads of the 5 cacheable tools (`get_quote`,
   `get_price_history`, `get_option_chain`, `search_instruments`,
   `get_instrument_by_cusip`). Per-table TTLs (60 s quotes / 5 m option
-  chains / 24 h instruments / 1 h-recent + 60 s-stale price history)
-  cut Schwab API pressure and unlock OLAP queries for the Shakeout
-  research workflow. **Disabled by default (opt-in)** — no DuckDB file is
-  created and every call hits Schwab live. Enable explicitly with
-  `SCHWAB_CACHE_ENABLED=true` (also accepts `1` / `yes` / `on`); force
-  fresh reads via `SCHWAB_CACHE_BYPASS=1`. When disabled, cacheable tools
-  report `_cache_status: "disabled"`; the response shape is unchanged.
+  chains / 24 h instruments / 60 s recent price history) cut Schwab API
+  pressure. **Disabled by default (opt-in)** — every call hits Schwab live.
+  Enable with `SCHWAB_CACHE_ENABLED=true` (also accepts `1` / `yes` / `on`);
+  force fresh reads via `SCHWAB_CACHE_BYPASS=1`. When disabled, cacheable
+  tools report `_cache_status: "disabled"`; the response shape is unchanged.
+
+  ⚠️ **BREAKING (v0.5.0):** the embedded DuckDB cache is removed in favour of
+  a pluggable backend selected via `SCHWAB_CACHE_BACKEND`:
+
+  | Backend | Default | Dependency | Notes |
+  | --- | --- | --- | --- |
+  | `memory` | ✅ | none (stdlib) | In-process LRU + TTL, concurrency-safe, non-blocking, no files. Derived-analysis history (`option_chain_snapshots` / `iv_history` / candle OLAP) keeps **no durable store** — those degrade gracefully (`get_iv_percentile` returns a `cache_disabled`/empty payload, snapshot writes report `_cached_rows: 0`). |
+  | `clickhouse` | — | `pip install schwab-marketdata-mcp[clickhouse]` + `SCHWAB_CLICKHOUSE_URL` | Durably persists the derived-analysis time series and serves the real ATM-IV / IV-percentile / candle-OLAP analytics. |
+
+  All 15 tools keep working out of the box on the default memory backend; only
+  the IV-history-backed analytics require the ClickHouse extra to retain
+  cross-session history.
 - **Health probe** (`schwab_marketdata_mcp.health`) returns distinct exit
   codes for token age, missing/malformed token, and insecure permissions —
   ready for cron / launchd alerting.
@@ -171,7 +180,7 @@ At-a-glance map of name → endpoint:
 | 10 | `get_instrument_by_cusip`     | `GET /instruments/{cusip_id}`              |
 | 11 | `health_check`                | local — token age + cache health           |
 | 12 | `get_server_info`             | local — versions + supported tool list     |
-| 13 | `get_cache_stats`             | local — DuckDB cache rows / size / hit-rate |
+| 13 | `get_cache_stats`             | local — cache backend (memory/clickhouse) + live entry count |
 | 14 | `get_iv_percentile`           | local — ATM IV percentile rank from cached `iv_history` (refresh=True pulls fresh chain) |
 | 15 | `get_streaming_snapshot` 🧪    | Streamer WebSocket — bounded snapshot      |
 

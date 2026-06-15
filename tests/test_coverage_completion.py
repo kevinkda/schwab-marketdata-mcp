@@ -1,23 +1,13 @@
-"""Deep-coverage completion tests — drive every remaining branch to 100%.
+"""Deep-coverage completion tests — non-cache modules (v0.7 T0 trimmed).
 
-Batch 2 of the v0.6 test campaign.  Each test cites the ``file:line``
-gap it closes (from ``--cov-report=term-missing``).  Tests here are
-*real* — they assert on persisted content / redaction / return shape,
-never empty-pass placeholders.
-
-Modules driven to 100% here:
-* ``cache.py``        — corruption / quarantine / DB-closed / event-log
-* ``tools/meta.py``   — token-state exceptions / cache-disabled paths
-* ``tools/streaming`` — make_client raise / login auth+transient / handler guards
-* ``tools/options``   — _persist_chain_snapshot cache-None
-* ``tools/price_history`` — _frequency_to_int(None)
-* ``tools/_enums``    — unknown-enum → SchwabValidationError
-* ``tools/_runtime``  — get_client cached / non-raise_for_status resp
-* ``client.py``       — Retry-After header guard / credential_missing
-* ``health.py``       — probe paths / OSError guards
-* ``metrics.py``      — cli human-text / tail-read guards
-* ``server.py``       — error fallback / SchwabError catch / main()
-* ``stats.py``        — module import shim
+.. versionchanged:: 0.5.0
+    The DuckDB cache is replaced by a pluggable backend; the cache-internals
+    coverage tests that drove the old DuckDB implementation are removed (the
+    new ``cache.py`` is fully covered by ``test_cache.py`` /
+    ``test_option_chain_cache.py`` / ``test_iv_percentile.py``).  This file
+    retains the still-valid pure-helper tests plus the non-cache module
+    coverage (meta / runtime / streaming / client / health / metrics /
+    server / stats / enums).  Each test cites the ``file:line`` gap it closes.
 """
 
 from __future__ import annotations
@@ -29,471 +19,9 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
-import duckdb
 import pytest
 
 from schwab_marketdata_mcp import cache
-
-# ===========================================================================
-# cache.py — corruption / quarantine / DB-closed / event-log branches
-# ===========================================================================
-
-
-def test_quarantine_returns_when_db_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """cache.py:366-368 — _quarantine_and_reopen with no file on disk → conn None."""
-    c = cache.Cache(tmp_path / "c.duckdb")
-    c.close()
-    # Force the quarantine path against a non-existent file.
-    c.db_path = tmp_path / "ghost.duckdb"
-    c._quarantine_and_reopen(RuntimeError("synthetic"))
-    assert c._conn is None
-
-
-def test_quarantine_rename_failure_sets_conn_none(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """cache.py:378-381 — os.rename OSError → conn None, no reopen."""
-    db = tmp_path / "c.duckdb"
-    c = cache.Cache(db)
-    c.close()
-    assert db.exists()
-
-    def _boom_rename(*_a: Any, **_k: Any) -> None:
-        raise OSError("rename denied")
-
-    monkeypatch.setattr(cache.os, "rename", _boom_rename)
-    c._quarantine_and_reopen(RuntimeError("corrupt"))
-    assert c._conn is None
-
-
-def test_quarantine_reopen_failure_sets_conn_none(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """cache.py:390-392 — reopen after rename fails (duckdb.connect raises)."""
-    db = tmp_path / "c.duckdb"
-    c = cache.Cache(db)
-    c.close()
-
-    calls = {"n": 0}
-    real_connect = duckdb.connect
-
-    def _fail_second_connect(*a: Any, **k: Any) -> Any:
-        calls["n"] += 1
-        raise duckdb.Error("reopen failed")
-
-    monkeypatch.setattr(cache.duckdb, "connect", _fail_second_connect)
-    c._quarantine_and_reopen(RuntimeError("corrupt"))
-    assert c._conn is None
-    # The corrupt backup must have been created before the failed reopen.
-    assert any(p.name.startswith("c.duckdb.corrupt-") for p in tmp_path.iterdir())
-    monkeypatch.setattr(cache.duckdb, "connect", real_connect)
-
-
-def test_record_event_noop_when_conn_none(tmp_path: Path) -> None:
-    """cache.py:414 — _record_event early-returns when conn is None."""
-    c = cache.Cache(tmp_path / "c.duckdb")
-    c.close()
-    # Must not raise even though the connection is gone.
-    c._record_event("hit", "quotes_cache")
-
-
-def test_record_event_swallows_duckdb_error(tmp_path: Path) -> None:
-    """cache.py:420-421 — INSERT failure is swallowed."""
-    c = cache.Cache(tmp_path / "c.duckdb")
-    real = c._conn
-    assert real is not None
-    wrapped = MagicMock(wraps=real)
-    wrapped.execute.side_effect = duckdb.Error("insert blew up")
-    c._conn = wrapped
-    c._record_event("hit", "quotes_cache")  # swallowed
-    c._conn = real
-    c.close()
-
-
-def _wrap_conn_raising(c: cache.Cache, exc: Exception) -> Any:
-    """Return the real conn after installing a wrapped conn whose execute raises."""
-    real = c._conn
-    assert real is not None
-    wrapped = MagicMock(wraps=real)
-    wrapped.execute.side_effect = exc
-    c._conn = wrapped
-    return real
-
-
-def test_get_quote_conn_none_returns_none(tmp_path: Path) -> None:
-    """cache.py:429 — get_quote with conn None → None."""
-    c = cache.Cache(tmp_path / "c.duckdb")
-    c.close()
-    assert c.get_quote("AAPL") is None
-
-
-def test_get_quote_swallows_query_error(tmp_path: Path) -> None:
-    """cache.py:435-437 — SELECT failure logged, returns None."""
-    c = cache.Cache(tmp_path / "c.duckdb")
-    real = _wrap_conn_raising(c, duckdb.Error("select boom"))
-    assert c.get_quote("AAPL") is None
-    c._conn = real
-    c.close()
-
-
-def test_put_quote_conn_none_noop(tmp_path: Path) -> None:
-    """cache.py:452 — put_quote with conn None is a no-op."""
-    c = cache.Cache(tmp_path / "c.duckdb")
-    c.close()
-    c.put_quote("AAPL", {"AAPL": {"quote": {"lastPrice": 1.0}}})  # no raise
-
-
-def test_put_quote_swallows_write_error(tmp_path: Path) -> None:
-    """cache.py:478-479 — INSERT failure logged, swallowed."""
-    c = cache.Cache(tmp_path / "c.duckdb")
-    real = _wrap_conn_raising(c, duckdb.Error("write boom"))
-    c.put_quote("AAPL", {"AAPL": {"quote": {"lastPrice": 1.0}}})
-    c._conn = real
-    c.close()
-
-
-def test_get_price_history_conn_none(tmp_path: Path) -> None:
-    """cache.py:504 — conn None → None."""
-    c = cache.Cache(tmp_path / "c.duckdb")
-    c.close()
-    params = {"symbol": "VOO", "period_type": "DAY", "frequency_type": "MINUTE", "frequency": 30}
-    assert c.get_price_history(params) is None
-
-
-def test_get_price_history_swallows_query_error(tmp_path: Path) -> None:
-    """cache.py:515-520 — SELECT failure → None."""
-    c = cache.Cache(tmp_path / "c.duckdb")
-    real = _wrap_conn_raising(c, duckdb.Error("ph select boom"))
-    params = {"symbol": "VOO", "period_type": "DAY", "frequency_type": "MINUTE", "frequency": 30}
-    assert c.get_price_history(params) is None
-    c._conn = real
-    c.close()
-
-
-def test_get_price_history_window_filters_start_end(tmp_path: Path) -> None:
-    """cache.py:532-535 — start/end window filters drop out-of-range candles."""
-    db = tmp_path / "c.duckdb"
-    base = datetime.now(tz=UTC).replace(microsecond=0) - timedelta(days=5)
-    candles = [
-        {
-            "datetime": int((base + timedelta(days=i)).replace(tzinfo=UTC).timestamp() * 1000),
-            "open": 1.0,
-            "high": 1.0,
-            "low": 1.0,
-            "close": 1.0,
-            "volume": 10,
-        }
-        for i in range(5)
-    ]
-    params = {"symbol": "VOO", "period_type": "DAY", "frequency_type": "DAILY", "frequency": 1}
-    with cache.Cache(db) as c:
-        c.put_price_history(params, {"candles": candles})
-        # Window that includes only the middle candle.
-        windowed = dict(params)
-        windowed["start_datetime"] = (base + timedelta(days=2)).isoformat()
-        windowed["end_datetime"] = (base + timedelta(days=2, hours=1)).isoformat()
-        got = c.get_price_history(windowed)
-    assert got is not None
-    assert len(got["candles"]) == 1
-
-
-def test_put_price_history_conn_none_noop(tmp_path: Path) -> None:
-    """cache.py:595 — put_price_history conn None no-op."""
-    c = cache.Cache(tmp_path / "c.duckdb")
-    c.close()
-    params = {"symbol": "VOO", "period_type": "DAY", "frequency_type": "MINUTE", "frequency": 30}
-    c.put_price_history(params, {"candles": [{"datetime": 1700000000000, "close": 1.0}]})
-
-
-def test_put_price_history_swallows_write_error(tmp_path: Path) -> None:
-    """cache.py:607-608 — executemany failure swallowed."""
-    c = cache.Cache(tmp_path / "c.duckdb")
-    real = c._conn
-    assert real is not None
-    wrapped = MagicMock(wraps=real)
-    wrapped.executemany.side_effect = duckdb.Error("ph write boom")
-    c._conn = wrapped
-    params = {"symbol": "VOO", "period_type": "DAY", "frequency_type": "MINUTE", "frequency": 30}
-    c.put_price_history(params, {"candles": [{"datetime": 1700000000000, "close": 1.0}]})
-    c._conn = real
-    c.close()
-
-
-def test_get_option_chain_conn_none(tmp_path: Path) -> None:
-    """cache.py:619 — conn None → None."""
-    c = cache.Cache(tmp_path / "c.duckdb")
-    c.close()
-    assert c.get_option_chain({"symbol": "AAPL"}) is None
-
-
-def test_get_option_chain_swallows_query_error(tmp_path: Path) -> None:
-    """cache.py:625-630 — SELECT failure → None."""
-    c = cache.Cache(tmp_path / "c.duckdb")
-    real = _wrap_conn_raising(c, duckdb.Error("oc select boom"))
-    assert c.get_option_chain({"symbol": "AAPL"}) is None
-    c._conn = real
-    c.close()
-
-
-def test_put_option_chain_conn_none_and_error(tmp_path: Path) -> None:
-    """cache.py:653 + 664-665 — conn None no-op, then write error swallowed."""
-    c = cache.Cache(tmp_path / "c.duckdb")
-    c.close()
-    c.put_option_chain({"symbol": "AAPL"}, {"x": 1})  # conn None branch
-    c2 = cache.Cache(tmp_path / "c2.duckdb")
-    real = _wrap_conn_raising(c2, duckdb.Error("oc write boom"))
-    c2.put_option_chain({"symbol": "AAPL"}, {"x": 1})
-    c2._conn = real
-    c2.close()
-
-
-def test_get_instruments_conn_none_and_error(tmp_path: Path) -> None:
-    """cache.py:676 + 682-687 — conn None → None, then SELECT error → None."""
-    c = cache.Cache(tmp_path / "c.duckdb")
-    c.close()
-    assert c.get_instruments({"cusip": "X"}) is None
-    c2 = cache.Cache(tmp_path / "c2.duckdb")
-    real = _wrap_conn_raising(c2, duckdb.Error("instr select boom"))
-    assert c2.get_instruments({"cusip": "X"}) is None
-    c2._conn = real
-    c2.close()
-
-
-def test_put_instruments_conn_none_and_error(tmp_path: Path) -> None:
-    """cache.py:709 + 720-721 — conn None no-op, write error swallowed."""
-    c = cache.Cache(tmp_path / "c.duckdb")
-    c.close()
-    c.put_instruments({"cusip": "X"}, {"x": 1})
-    c2 = cache.Cache(tmp_path / "c2.duckdb")
-    real = _wrap_conn_raising(c2, duckdb.Error("instr write boom"))
-    c2.put_instruments({"cusip": "X"}, {"x": 1})
-    c2._conn = real
-    c2.close()
-
-
-# ---- option chain snapshots / aggregate IV / OLAP / stats branches ----
-
-
-def test_write_snapshot_conn_none_returns_zero(tmp_path: Path) -> None:
-    """cache.py:761 — write_option_chain_snapshot conn None → 0."""
-    c = cache.Cache(tmp_path / "c.duckdb")
-    c.close()
-    rows = [{"expiry": "2026-06-19", "strike": 100.0, "call_put": "CALL"}]
-    assert c.write_option_chain_snapshot("AAPL", datetime.now(tz=UTC), rows) == 0
-
-
-def test_write_snapshot_swallows_write_error(tmp_path: Path) -> None:
-    """cache.py:774-779 — executemany failure → 0."""
-    c = cache.Cache(tmp_path / "c.duckdb")
-    real = c._conn
-    assert real is not None
-    wrapped = MagicMock(wraps=real)
-    wrapped.executemany.side_effect = duckdb.Error("snap write boom")
-    c._conn = wrapped
-    rows = [{"expiry": "2026-06-19", "strike": 100.0, "call_put": "CALL"}]
-    assert c.write_option_chain_snapshot("AAPL", datetime.now(tz=UTC), rows) == 0
-    c._conn = real
-    c.close()
-
-
-def test_aggregate_atm_iv_invalid_underlying_and_date(tmp_path: Path) -> None:
-    """cache.py:807-811 — bad underlying / unparseable date → all-None."""
-    with cache.Cache(tmp_path / "c.duckdb") as c:
-        assert c.aggregate_atm_iv("", date(2026, 5, 1)) == {"30d": None, "60d": None, "90d": None}
-        assert c.aggregate_atm_iv("AAPL", "not-a-date") == {  # type: ignore[arg-type]
-            "30d": None,
-            "60d": None,
-            "90d": None,
-        }
-
-
-def test_fetch_latest_snapshot_conn_none(tmp_path: Path) -> None:
-    """cache.py:837 — _fetch_latest_snapshot_contracts conn None → []."""
-    c = cache.Cache(tmp_path / "c.duckdb")
-    c.close()
-    assert c._fetch_latest_snapshot_contracts("AAPL", datetime.now(tz=UTC)) == []
-
-
-def test_fetch_latest_snapshot_swallows_query_error(tmp_path: Path) -> None:
-    """cache.py:857-862 — query failure → []."""
-    c = cache.Cache(tmp_path / "c.duckdb")
-    real = _wrap_conn_raising(c, duckdb.Error("snap query boom"))
-    assert c._fetch_latest_snapshot_contracts("AAPL", datetime.now(tz=UTC)) == []
-    c._conn = real
-    c.close()
-
-
-def test_upsert_iv_history_conn_none_and_error(tmp_path: Path) -> None:
-    """cache.py:888 + 899-900 — conn None no-op, then write error swallowed."""
-    c = cache.Cache(tmp_path / "c.duckdb")
-    c.close()
-    c._upsert_iv_history("AAPL", date(2026, 5, 1), "30d", 0.3, 5)
-    c2 = cache.Cache(tmp_path / "c2.duckdb")
-    real = _wrap_conn_raising(c2, duckdb.Error("iv write boom"))
-    c2._upsert_iv_history("AAPL", date(2026, 5, 1), "30d", 0.3, 5)
-    c2._conn = real
-    c2.close()
-
-
-def test_get_iv_percentile_rank_validation_errors(tmp_path: Path) -> None:
-    """cache.py:923-927 — bad bucket / lookback / underlying raise ValueError."""
-    with cache.Cache(tmp_path / "c.duckdb") as c:
-        with pytest.raises(ValueError, match="expiry_bucket"):
-            c.get_iv_percentile_rank("AAPL", "45d")
-        with pytest.raises(ValueError, match="lookback_days"):
-            c.get_iv_percentile_rank("AAPL", "30d", lookback_days=0)
-        with pytest.raises(ValueError, match="underlying"):
-            c.get_iv_percentile_rank("", "30d")
-
-
-def test_fetch_iv_history_window_conn_none_and_error(tmp_path: Path) -> None:
-    """cache.py:980 + 991-996 — conn None → [], query error → []."""
-    c = cache.Cache(tmp_path / "c.duckdb")
-    c.close()
-    assert c._fetch_iv_history_window("AAPL", "30d", 252) == []
-    c2 = cache.Cache(tmp_path / "c2.duckdb")
-    real = _wrap_conn_raising(c2, duckdb.Error("iv window boom"))
-    assert c2._fetch_iv_history_window("AAPL", "30d", 252) == []
-    c2._conn = real
-    c2.close()
-
-
-def test_query_candles_conn_none_and_error(tmp_path: Path) -> None:
-    """cache.py:1023 + 1037-1039 — conn None → [], query error → []; tz coercion 1019-1020."""
-    c = cache.Cache(tmp_path / "c.duckdb")
-    c.close()
-    start = datetime.now(tz=UTC) - timedelta(days=1)
-    end = datetime.now(tz=UTC)
-    assert c.query_candles("VOO", start, end) == []
-    c2 = cache.Cache(tmp_path / "c2.duckdb")
-    real = _wrap_conn_raising(c2, duckdb.Error("candles boom"))
-    assert c2.query_candles("VOO", start, end) == []
-    c2._conn = real
-    c2.close()
-
-
-def test_query_candles_returns_rows_with_tz_aware_bounds(tmp_path: Path) -> None:
-    """cache.py:1019-1020 + 1040-1057 — tz-aware start/end + row mapping."""
-    db = tmp_path / "c.duckdb"
-    base = datetime.now(tz=UTC).replace(microsecond=0) - timedelta(days=3)
-    candles = [
-        {
-            "datetime": int((base + timedelta(days=i)).replace(tzinfo=UTC).timestamp() * 1000),
-            "open": 1.0,
-            "high": 2.0,
-            "low": 0.5,
-            "close": 1.5,
-            "volume": 100,
-        }
-        for i in range(3)
-    ]
-    params = {"symbol": "VOO", "period_type": "DAY", "frequency_type": "DAILY", "frequency": 1}
-    with cache.Cache(db) as c:
-        c.put_price_history(params, {"candles": candles})
-        out = c.query_candles("VOO", base - timedelta(days=1), base + timedelta(days=5))
-    assert len(out) == 3
-    assert out[0]["close"] == 1.5
-    assert out[0]["datetime"].endswith("Z")
-
-
-def test_get_stats_size_oserror_branch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """cache.py:1071-1072 — stat() OSError → size_mb 0.0."""
-    c = cache.Cache(tmp_path / "c.duckdb")
-    real_stat = Path.stat
-    calls = {"n": 0}
-
-    def _boom_stat(self: Path, *a: Any, **k: Any) -> Any:
-        if self == c.db_path:
-            calls["n"] += 1
-            # First call is exists() — let it through; the second is the
-            # size read inside get_stats() — fail that one.
-            if calls["n"] >= 2:
-                raise OSError("stat denied")
-        return real_stat(self, *a, **k)
-
-    monkeypatch.setattr(Path, "stat", _boom_stat)
-    stats = c.get_stats()
-    assert stats.size_mb == 0.0
-    c.close()
-
-
-def test_get_stats_count_and_event_errors(tmp_path: Path) -> None:
-    """cache.py:1079-1080 + 1094-1095 — COUNT(*) and event-count failures swallowed."""
-    c = cache.Cache(tmp_path / "c.duckdb")
-    real = c._conn
-    assert real is not None
-    wrapped = MagicMock(wraps=real)
-    wrapped.execute.side_effect = duckdb.Error("count boom")
-    c._conn = wrapped
-    stats = c.get_stats()
-    # All tables reported 0 rows because COUNT(*) raised.
-    assert all(v == 0 for v in stats.rows_per_table.values())
-    assert stats.hits_24h == 0
-    c._conn = real
-    c.close()
-
-
-def test_count_expired_conn_none_and_unknown_table(tmp_path: Path) -> None:
-    """cache.py:1111 + 1128 — conn None → 0, unknown table → 0."""
-    c = cache.Cache(tmp_path / "c.duckdb")
-    c.close()
-    assert c._count_expired("quotes_cache") == 0
-    c2 = cache.Cache(tmp_path / "c2.duckdb")
-    assert c2._count_expired("not_a_table") == 0
-    c2.close()
-
-
-def test_count_expired_price_history_error(tmp_path: Path) -> None:
-    """cache.py:1125-1126 — price_history count error → 0."""
-    c = cache.Cache(tmp_path / "c.duckdb")
-    real = _wrap_conn_raising(c, duckdb.Error("ph count boom"))
-    assert c._count_expired("price_history_cache") == 0
-    c._conn = real
-    c.close()
-
-
-def test_count_expired_generic_table_error(tmp_path: Path) -> None:
-    """cache.py:1134-1135 — generic table count error → 0."""
-    c = cache.Cache(tmp_path / "c.duckdb")
-    real = _wrap_conn_raising(c, duckdb.Error("count boom"))
-    assert c._count_expired("quotes_cache") == 0
-    c._conn = real
-    c.close()
-
-
-def test_hourly_breakdown_conn_none_and_error(tmp_path: Path) -> None:
-    """cache.py:1155 + 1172-1174 — conn None → [], query error → []."""
-    c = cache.Cache(tmp_path / "c.duckdb")
-    c.close()
-    assert c.hourly_breakdown(24) == []
-    c2 = cache.Cache(tmp_path / "c2.duckdb")
-    real = _wrap_conn_raising(c2, duckdb.Error("breakdown boom"))
-    assert c2.hourly_breakdown(24) == []
-    c2._conn = real
-    c2.close()
-
-
-def test_truncate_expired_conn_none_and_error(tmp_path: Path) -> None:
-    """cache.py:1197 + 1206-1207 + 1212-1213 — conn None → 0, delete error swallowed."""
-    c = cache.Cache(tmp_path / "c.duckdb")
-    c.close()
-    assert c.truncate_expired() == 0
-    c2 = cache.Cache(tmp_path / "c2.duckdb")
-    real = _wrap_conn_raising(c2, duckdb.Error("delete boom"))
-    assert c2.truncate_expired() == 0  # all deletes + event-prune fail, swallowed
-    c2._conn = real
-    c2.close()
-
-
-def test_reset_conn_none_and_error(tmp_path: Path) -> None:
-    """cache.py:1220-1227 — conn None no-op, DELETE error swallowed."""
-    c = cache.Cache(tmp_path / "c.duckdb")
-    c.close()
-    c.reset()  # conn None branch
-    c2 = cache.Cache(tmp_path / "c2.duckdb")
-    real = _wrap_conn_raising(c2, duckdb.Error("reset boom"))
-    c2.reset()
-    c2._conn = real
-    c2.close()
-
-
-# ---- module-level helper branches ----
 
 
 def test_parse_dt_naive_and_bad_string() -> None:
@@ -506,22 +34,6 @@ def test_parse_dt_naive_and_bad_string() -> None:
 def test_safe_int_bad_value() -> None:
     """cache.py:289-290 — non-numeric → None."""
     assert cache._safe_int("abc") is None
-
-
-def test_is_expired_parses_string_fetched_at() -> None:
-    """cache.py:1257-1260 — string fetched_at parsed; unparseable → True."""
-    iso = datetime.now(tz=UTC).replace(tzinfo=None).isoformat()
-    assert cache._is_expired(iso, 3600) is False
-    assert cache._is_expired("garbage", 3600) is True
-
-
-def test_deserialise_variants() -> None:
-    """cache.py:1267 + 1269 + 1272-1276 — None / dict / bad-json / non-dict json."""
-    assert cache._deserialise(None) is None
-    assert cache._deserialise({"a": 1}) == {"a": 1}
-    assert cache._deserialise("{bad json") is None
-    assert cache._deserialise("[1,2,3]") is None  # valid json but not a dict
-    assert cache._deserialise(12345) is None  # not str/bytes/dict
 
 
 def test_normalise_naive_utc_fallback_to_now() -> None:
@@ -560,19 +72,6 @@ def test_compute_atm_iv_median_none_path() -> None:
     assert count == 0
 
 
-def test_format_hour_utc_variants() -> None:
-    """cache.py:1243-1250 — naive / aware / parseable str / None."""
-    assert cache._format_hour_utc(datetime(2026, 5, 1, 10)).endswith("Z")
-    aware = datetime(2026, 5, 1, 10, tzinfo=UTC)
-    assert cache._format_hour_utc(aware).endswith("Z")
-    assert cache._format_hour_utc("not-a-date") is None
-
-
-# ===========================================================================
-# tools/meta.py — token-state exceptions / cache-disabled paths
-# ===========================================================================
-
-
 async def test_meta_safe_token_state_path_exception(monkeypatch: pytest.MonkeyPatch) -> None:
     """meta.py:37-38 — resolve_token_path raising → (MISSING, None)."""
     from schwab_marketdata_mcp.security import TokenState
@@ -585,37 +84,6 @@ async def test_meta_safe_token_state_path_exception(monkeypatch: pytest.MonkeyPa
     state, parsed = meta._safe_token_state()
     assert state is TokenState.MISSING
     assert parsed is None
-
-
-def test_meta_safe_cache_summary_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    """meta.py:51 — cache disabled → enabled False summary."""
-    from schwab_marketdata_mcp.tools import meta
-
-    monkeypatch.setenv("SCHWAB_CACHE_ENABLED", "0")
-    out = meta._safe_cache_summary()
-    assert out == {"enabled": False, "size_mb": 0.0, "hit_rate_24h": None}
-
-
-def test_meta_safe_cache_summary_get_cache_none(monkeypatch: pytest.MonkeyPatch) -> None:
-    """meta.py:54 — enabled but get_cache() returns None → enabled False summary."""
-    from schwab_marketdata_mcp.tools import meta
-
-    monkeypatch.setenv("SCHWAB_CACHE_ENABLED", "true")
-    monkeypatch.setattr(meta, "get_cache", lambda: None)
-    out = meta._safe_cache_summary()
-    assert out["enabled"] is False
-
-
-def test_meta_safe_cache_summary_get_stats_raises(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """meta.py:57-58 — get_stats() raising → enabled True, zeroed numerics."""
-    from schwab_marketdata_mcp.tools import meta
-
-    monkeypatch.setenv("SCHWAB_CACHE_ENABLED", "true")
-    fake_cache = MagicMock()
-    fake_cache.get_stats.side_effect = RuntimeError("stats boom")
-    monkeypatch.setattr(meta, "get_cache", lambda: fake_cache)
-    out = meta._safe_cache_summary()
-    assert out == {"enabled": True, "size_mb": 0.0, "hit_rate_24h": None}
 
 
 async def test_meta_health_check_token_valid_mtime_oserror(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -648,22 +116,6 @@ def test_meta_rate_limit_budget_unset_and_bad(monkeypatch: pytest.MonkeyPatch) -
     assert meta._rate_limit_budget() == 120
     monkeypatch.setenv("SCHWAB_RATE_LIMIT_PER_MIN", "")
     assert meta._rate_limit_budget() == 120
-
-
-async def test_meta_get_cache_stats_cache_none(monkeypatch: pytest.MonkeyPatch) -> None:
-    """meta.py:174 — get_cache None → empty stats dict."""
-    from schwab_marketdata_mcp.tools import meta
-
-    monkeypatch.setattr(meta, "get_cache", lambda: None)
-    out = await meta.get_cache_stats_impl()
-    assert out["enabled"] is False
-    assert out["db_path"] is None
-    assert out["hourly_breakdown_24h"] == []
-
-
-# ===========================================================================
-# tools/price_history.py + tools/options.py + tools/_enums.py
-# ===========================================================================
 
 
 def test_frequency_to_int_none() -> None:
@@ -702,6 +154,37 @@ def test_enums_quote_field_single_and_list() -> None:
     assert _enums.quote_fields(None) is None
     fields = _enums.quote_fields(["QUOTE", "FUNDAMENTAL"])
     assert fields is not None and len(fields) == 2
+
+
+def test_meta_safe_cache_summary_get_cache_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    """meta.py:52-53 — enabled but get_cache() returns None → enabled False summary."""
+    from schwab_marketdata_mcp.tools import meta
+
+    monkeypatch.setenv("SCHWAB_CACHE_ENABLED", "true")
+    monkeypatch.setattr(meta, "get_cache", lambda: None)
+    out = meta._safe_cache_summary()
+    assert out == {"enabled": False, "backend": None, "entries": 0}
+
+
+def test_meta_safe_cache_summary_get_stats_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """meta.py:56-57 — get_stats() raising → enabled True, backend None, entries 0."""
+    from schwab_marketdata_mcp.tools import meta
+
+    monkeypatch.setenv("SCHWAB_CACHE_ENABLED", "true")
+    fake_cache = MagicMock()
+    fake_cache.get_stats.side_effect = RuntimeError("stats boom")
+    monkeypatch.setattr(meta, "get_cache", lambda: fake_cache)
+    out = meta._safe_cache_summary()
+    assert out == {"enabled": True, "backend": None, "entries": 0}
+
+
+async def test_meta_get_cache_stats_cache_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    """meta.py:176 — get_cache None → backend None / disabled / 0 entries."""
+    from schwab_marketdata_mcp.tools import meta
+
+    monkeypatch.setattr(meta, "get_cache", lambda: None)
+    out = await meta.get_cache_stats_impl()
+    assert out == {"backend": None, "enabled": False, "entries": 0}
 
 
 # ===========================================================================
@@ -1382,194 +865,6 @@ def test_parse_dt_tzaware_datetime_normalised() -> None:
     assert out.tzinfo is None
 
 
-def test_open_secure_chmod_oserror_swallowed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """cache.py:358-359 — secure_chmod OSError during _open is swallowed."""
-    monkeypatch.setattr(cache._platform, "secure_chmod", MagicMock(side_effect=OSError("chmod denied")))
-    c = cache.Cache(tmp_path / "c.duckdb")
-    assert c._conn is not None  # open still succeeded
-    c.close()
-
-
-def test_quarantine_reopen_secure_chmod_oserror(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """cache.py:388-389 — secure_chmod OSError during reopen is swallowed."""
-    db = tmp_path / "c.duckdb"
-    c = cache.Cache(db)
-    c.close()
-    monkeypatch.setattr(cache._platform, "secure_chmod", MagicMock(side_effect=OSError("chmod denied")))
-    c._quarantine_and_reopen(RuntimeError("corrupt"))
-    # Reopen succeeded despite the chmod failure.
-    assert c._conn is not None
-    c.close()
-
-
-def test_close_idempotent_when_conn_none(tmp_path: Path) -> None:
-    """cache.py:398->exit — close() with conn already None is a no-op."""
-    c = cache.Cache(tmp_path / "c.duckdb")
-    c.close()
-    c.close()  # second close — conn is None, exits cleanly
-    assert c._conn is None
-
-
-def test_price_history_skips_unparseable_candle_datetime(tmp_path: Path) -> None:
-    """cache.py:530-531 — a row whose candle_datetime won't parse is skipped.
-
-    DuckDB enforces NOT NULL on candle_datetime, so a real NULL is
-    impossible; we drive the defensive guard by wrapping the connection
-    so ``fetchall`` returns a non-datetime, unparseable value.
-    """
-    db = tmp_path / "c.duckdb"
-    params = {"symbol": "VOO", "period_type": "DAY", "frequency_type": "DAILY", "frequency": 1}
-    with cache.Cache(db) as c:
-        real = c._conn
-        assert real is not None
-
-        class _Cursor:
-            def fetchall(self) -> list[tuple[Any, ...]]:
-                # cdt is a str that _parse_dt cannot parse → skipped.
-                return [("not-a-datetime", 1.0, 1.0, 1.0, 1.0, 10, datetime.now(tz=UTC))]
-
-        wrapped = MagicMock(wraps=real)
-        wrapped.execute.return_value = _Cursor()
-        c._conn = wrapped
-        got = c.get_price_history(params)
-        c._conn = real
-    # The single row had an unparseable datetime → filtered → miss.
-    assert got is None
-
-
-def test_put_price_history_invalid_params_and_non_list_candles(tmp_path: Path) -> None:
-    """cache.py:564 + 567 — missing required params / non-list candles → no-op."""
-    with cache.Cache(tmp_path / "c.duckdb") as c:
-        c.put_price_history({"symbol": ""}, {"candles": []})  # missing params
-        c.put_price_history(
-            {"symbol": "VOO", "period_type": "DAY", "frequency_type": "DAILY", "frequency": 1},
-            {"candles": "not-a-list"},
-        )
-
-
-def test_put_price_history_skips_non_dict_and_bad_dt_candles(tmp_path: Path) -> None:
-    """cache.py:572 + 575 + 592 — non-dict candle / unparseable dt skipped; empty rows → no-op."""
-    params = {"symbol": "VOO", "period_type": "DAY", "frequency_type": "DAILY", "frequency": 1}
-    with cache.Cache(tmp_path / "c.duckdb") as c:
-        # All candles invalid → rows empty → early return at 592.
-        c.put_price_history(params, {"candles": ["scalar", {"datetime": "bad-date", "close": 1.0}]})
-        got = c.get_price_history(params)
-    assert got is None
-
-
-def test_get_instruments_expired(tmp_path: Path) -> None:
-    """cache.py:693-694 — expired instruments row → None (records 'expired')."""
-    params = {"cusip": "037833100"}
-    with cache.Cache(tmp_path / "c.duckdb") as c:
-        c.put_instruments(params, {"x": 1}, ttl_seconds=0)
-        time.sleep(0.05)
-        assert c.get_instruments(params) is None
-
-
-def test_write_snapshot_all_rows_invalid_returns_zero(tmp_path: Path) -> None:
-    """cache.py:758 — contracts present but none normalise → 0 (no DB write)."""
-    with cache.Cache(tmp_path / "c.duckdb") as c:
-        # Missing strike on every contract → _normalise_option_contract → None.
-        rows = [{"expiry": "2026-06-19", "call_put": "CALL"}]
-        assert c.write_option_chain_snapshot("AAPL", datetime.now(tz=UTC), rows) == 0
-
-
-def test_fetch_latest_snapshot_skips_bad_expiry(tmp_path: Path) -> None:
-    """cache.py:865-867 — a snapshot row with an unparseable expiry is skipped.
-
-    DuckDB enforces NOT NULL on expiry, so we wrap the connection to feed
-    ``_fetch_latest_snapshot_contracts`` a row whose expiry _coerce_date rejects.
-    """
-    db = tmp_path / "c.duckdb"
-    with cache.Cache(db) as c:
-        real = c._conn
-        assert real is not None
-        snap_at = datetime(2026, 5, 1, 14, 30)
-
-        class _Cursor:
-            def __init__(self, rows: Any) -> None:
-                self._rows = rows
-
-            def fetchone(self) -> Any:
-                return (snap_at,)
-
-            def fetchall(self) -> list[tuple[Any, ...]]:
-                return [("not-a-date", 100.0, "CALL", 0.3)]
-
-        def _exec(sql: str, *_a: Any, **_k: Any) -> Any:
-            return _Cursor(None)
-
-        wrapped = MagicMock(wraps=real)
-        wrapped.execute.side_effect = _exec
-        c._conn = wrapped
-        out = c._fetch_latest_snapshot_contracts("AAPL", datetime(2026, 5, 2))
-        c._conn = real
-    assert out == []
-
-
-def test_fetch_iv_history_window_skips_bad_date(tmp_path: Path) -> None:
-    """cache.py:999-1001 — iv_history row with unparseable asof_date skipped."""
-    db = tmp_path / "c.duckdb"
-    with cache.Cache(db) as c:
-        real = c._conn
-        assert real is not None
-
-        class _Cursor:
-            def fetchall(self) -> list[tuple[Any, ...]]:
-                return [("not-a-date", 0.3, 5)]
-
-        wrapped = MagicMock(wraps=real)
-        wrapped.execute.return_value = _Cursor()
-        c._conn = wrapped
-        out = c._fetch_iv_history_window("AAPL", "30d", 252)
-        c._conn = real
-    assert out == []
-
-
-def test_query_candles_skips_bad_datetime(tmp_path: Path) -> None:
-    """cache.py:1043-1044 — query_candles skips a row with an unparseable datetime."""
-    db = tmp_path / "c.duckdb"
-    base = datetime.now(tz=UTC).replace(microsecond=0) - timedelta(days=2)
-    with cache.Cache(db) as c:
-        real = c._conn
-        assert real is not None
-
-        class _Cursor:
-            def fetchall(self) -> list[tuple[Any, ...]]:
-                return [("not-a-datetime", 1.0, 1.0, 1.0, 1.0, 10, "DAY", "DAILY", 1)]
-
-        wrapped = MagicMock(wraps=real)
-        wrapped.execute.return_value = _Cursor()
-        c._conn = wrapped
-        out = c.query_candles("VOO", base - timedelta(days=1), base + timedelta(days=1))
-        c._conn = real
-    assert out == []
-
-
-def test_hourly_breakdown_skips_unformattable_hour(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """cache.py:1179 — a row whose hour cannot be formatted is skipped."""
-    db = tmp_path / "c.duckdb"
-    with cache.Cache(db) as c:
-        c._record_event("hit", "quotes_cache")
-        # Force _format_hour_utc to reject the bucket value.
-        monkeypatch.setattr(cache, "_format_hour_utc", lambda _v: None)
-        out = c.hourly_breakdown(24)
-    assert out == []
-
-
-def test_format_hour_utc_parses_string() -> None:
-    """cache.py:1250 — parseable string returns ISO + Z."""
-    iso = "2026-05-01T10:00:00"
-    out = cache._format_hour_utc(iso)
-    assert out is not None and out.endswith("Z")
-
-
-def test_is_expired_none_inputs() -> None:
-    """cache.py:1255 — None fetched_at or ttl → expired (True)."""
-    assert cache._is_expired(None, 60) is True
-    assert cache._is_expired(datetime.now(tz=UTC).replace(tzinfo=None), None) is True
-
-
 def test_normalise_naive_utc_tzaware() -> None:
     """cache.py:1318 — tz-aware datetime → naive UTC (covered via parsed path None)."""
     aware = datetime(2026, 5, 1, 12, tzinfo=UTC)
@@ -1595,63 +890,6 @@ def test_normalise_naive_utc_parses_string_input() -> None:
     out = cache._normalise_naive_utc("2026-05-01T12:30:00Z")
     assert out == datetime(2026, 5, 1, 12, 30, 0)
     assert out.tzinfo is None
-
-
-def test_get_stats_conn_none_returns_empty(tmp_path: Path) -> None:
-    """cache.py:1074->1096 (not-taken) — conn None → empty rows, neutral stats."""
-    c = cache.Cache(tmp_path / "c.duckdb")
-    c.close()  # conn becomes None
-    stats = c.get_stats()
-    assert stats.rows_per_table == {}
-    assert stats.hits_24h == 0
-    assert stats.misses_24h == 0
-    assert stats.hit_rate_24h is None
-
-
-def test_truncate_expired_fetchone_none_skips_increment(tmp_path: Path) -> None:
-    """cache.py:1204->1198 (not-taken) — DELETE result fetchone()->None → no increment."""
-    c = cache.Cache(tmp_path / "c.duckdb")
-    real = c._conn
-    assert real is not None
-
-    class _NoneCursor:
-        def fetchone(self) -> Any:
-            return None
-
-    wrapped = MagicMock(wraps=real)
-    wrapped.execute.return_value = _NoneCursor()
-    c._conn = wrapped
-    # Every DELETE returns a None fetchone → deleted stays 0 across the loop.
-    assert c.truncate_expired() == 0
-    c._conn = real
-    c.close()
-
-
-def test_get_cache_singleton_race_branch(monkeypatch: pytest.MonkeyPatch) -> None:
-    """cache.py:1553->1555 (not-taken) — singleton set after acquiring the lock → skip build.
-
-    Replace the module lock so acquiring it populates ``_singleton`` as a
-    side effect: the top guard (1550) sees None and enters the lock, but the
-    inner re-check (1553) finds it set → the ``Cache()`` build is skipped.
-    """
-    cache.reset_cache_singleton()
-    monkeypatch.setenv("SCHWAB_CACHE_ENABLED", "true")
-
-    sentinel = cache.Cache(":memory:")
-    real_lock = cache._singleton_lock
-
-    class _SideEffectLock:
-        def __enter__(self) -> Any:
-            cache._singleton = sentinel
-            return real_lock.__enter__()
-
-        def __exit__(self, *a: Any) -> Any:
-            return real_lock.__exit__(*a)
-
-    monkeypatch.setattr(cache, "_singleton_lock", _SideEffectLock())
-    out = cache.get_cache()
-    assert out is sentinel
-    cache.reset_cache_singleton()
 
 
 def test_coerce_date_parse_dt_fallback() -> None:
@@ -1719,53 +957,6 @@ def test_compute_atm_iv_median_strike_none_guard() -> None:
         cache_mod._median = orig_median  # type: ignore[assignment]
     assert iv is None
     assert count == 1
-
-
-def test_price_history_recent_stale_forces_refresh(tmp_path: Path) -> None:
-    """cache.py:538->542 + 553-554 — stale recent candle forces refresh; empty window → miss."""
-    db = tmp_path / "c.duckdb"
-    now = datetime.now(tz=UTC).replace(microsecond=0)
-    params = {"symbol": "VOO", "period_type": "DAY", "frequency_type": "MINUTE", "frequency": 30}
-    with cache.Cache(db) as c:
-        # A recent candle (inside the 1h boundary) with a stale fetched_at.
-        c.put_price_history(
-            params,
-            {
-                "candles": [
-                    {"datetime": int((now - timedelta(minutes=5)).replace(tzinfo=UTC).timestamp() * 1000), "close": 1.0}
-                ]
-            },
-        )
-        assert c._conn is not None
-        c._conn.execute(
-            "UPDATE price_history_cache SET fetched_at = ?",
-            [now - timedelta(hours=2)],
-        )
-        got = c.get_price_history(params)
-    # Recent candle is stale → whole window refreshed → miss (None).
-    assert got is None
-
-
-def test_get_stats_no_db_file_size_zero(tmp_path: Path) -> None:
-    """cache.py:1068->1073 — db_path missing on disk → size_mb 0.0, conn still queried."""
-    c = cache.Cache(tmp_path / "c.duckdb")
-    # Remove the file but keep the (in-memory-ish) connection alive.
-    c.db_path = tmp_path / "never-created.duckdb"
-    stats = c.get_stats()
-    assert stats.size_mb == 0.0
-    assert "quotes_cache" in stats.rows_per_table
-    c.close()
-
-
-def test_truncate_expired_counts_deleted_rows(tmp_path: Path) -> None:
-    """cache.py:1204-1207 (and 1198 loop) — deleted-row count accumulates."""
-    params = {"cusip": "037833100"}
-    with cache.Cache(tmp_path / "c.duckdb") as c:
-        c.put_instruments(params, {"x": 1}, ttl_seconds=0)
-        c.put_quote("AAPL", {"AAPL": {"quote": {"lastPrice": 1.0}}}, ttl_seconds=0)
-        time.sleep(0.05)
-        deleted = c.truncate_expired()
-    assert deleted >= 2
 
 
 def test_get_cache_singleton_returns_existing(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1957,50 +1148,6 @@ async def test_streaming_drain_returns_when_deadline_passed() -> None:
 # Remaining branch-partial closures (538->542, 1074->1096, 1204->1198,
 # 1553->1555, health 271->274, _runtime 41->43, streaming 224->234)
 # ===========================================================================
-
-
-def test_price_history_recent_fresh_candle_is_served(tmp_path: Path) -> None:
-    """cache.py:536-542 (538->542 not-taken) — recent candle with FRESH fetched_at is served."""
-    db = tmp_path / "c.duckdb"
-    now = datetime.now(tz=UTC).replace(microsecond=0)
-    params = {"symbol": "VOO", "period_type": "DAY", "frequency_type": "MINUTE", "frequency": 30}
-    with cache.Cache(db) as c:
-        # Recent candle (inside 1h window) written just now → fetched_at is fresh.
-        c.put_price_history(
-            params,
-            {
-                "candles": [
-                    {"datetime": int((now - timedelta(minutes=5)).replace(tzinfo=UTC).timestamp() * 1000), "close": 1.0}
-                ]
-            },
-        )
-        got = c.get_price_history(params)
-    # Fresh recent candle served (the stale-refresh branch is NOT taken).
-    assert got is not None
-    assert len(got["candles"]) == 1
-
-
-def test_get_stats_with_rows_present(tmp_path: Path) -> None:
-    """cache.py:1074->1096 — conn present, tables populated → real counts + hit-rate."""
-    db = tmp_path / "c.duckdb"
-    with cache.Cache(db) as c:
-        c.put_quote("AAPL", {"AAPL": {"quote": {"lastPrice": 1.0}}})
-        c.get_quote("AAPL")  # records a hit event
-        c.get_quote("ZZZZ")  # records a miss event
-        stats = c.get_stats()
-    assert stats.rows_per_table["quotes_cache"] == 1
-    assert stats.hits_24h >= 1
-    assert stats.misses_24h >= 1
-    assert stats.hit_rate_24h is not None
-
-
-def test_truncate_expired_nothing_to_delete(tmp_path: Path) -> None:
-    """cache.py:1198-1205 (1204->1198 loop) — fresh rows → 0 deleted but loop runs all tables."""
-    db = tmp_path / "c.duckdb"
-    with cache.Cache(db) as c:
-        c.put_quote("AAPL", {"AAPL": {"quote": {"lastPrice": 1.0}}}, ttl_seconds=3600)
-        deleted = c.truncate_expired()
-    assert deleted == 0
 
 
 def test_get_cache_singleton_first_build(monkeypatch: pytest.MonkeyPatch) -> None:

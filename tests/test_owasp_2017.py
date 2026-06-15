@@ -25,6 +25,7 @@ from pathlib import Path
 import pytest
 
 from schwab_marketdata_mcp import cache
+from schwab_marketdata_mcp.cache_backend import MemoryBackend
 from schwab_marketdata_mcp.errors import SchwabAuthError, redact_secrets
 from schwab_marketdata_mcp.models import GetQuoteInput
 from schwab_marketdata_mcp.security import (
@@ -58,19 +59,20 @@ def test_a1_symbol_injection_rejected_by_regex(evil: str) -> None:
         GetQuoteInput(symbol=evil)
 
 
-def test_a1_duckdb_uses_parameterised_queries_only(tmp_path: Path) -> None:
+def test_a1_cache_keys_store_payload_as_inert_data() -> None:
     """OWASP 2017 A1 — a symbol containing SQL metachars cannot escape the
-    parameter binding: it is stored & retrieved verbatim, never executed."""
-    # A symbol that *would* be dangerous if string-concatenated into SQL.
+    backend's parameter binding: it round-trips verbatim, never executed.
+
+    v0.3.0+: the response cache binds (table, key) via ClickHouse query
+    parameters / opaque memory keys; there is no SQL string interpolation."""
     weird = "A';DROP"
-    with cache.Cache(tmp_path / "c.duckdb") as c:
+    with cache.Cache(backend=MemoryBackend()) as c:
         c.put_quote(weird, {weird: {"quote": {"lastPrice": 1.23}}})
         got = c.get_quote(weird)
-        # Table still exists and the row round-trips → binding, not interpolation.
         stats = c.get_stats()
     assert got is not None
     assert got[weird]["quote"]["lastPrice"] == 1.23
-    assert stats.rows_per_table["quotes_cache"] == 1
+    assert stats.entries == 1
 
 
 def test_a1_source_has_no_string_built_sql_with_user_input() -> None:
@@ -223,11 +225,21 @@ def test_a8_malicious_token_payload_yields_malformed_not_exec(tmp_path: Path) ->
     assert not Path("/tmp/pwned").exists()
 
 
-def test_a8_cache_deserialise_rejects_non_dict_json() -> None:
-    """OWASP 2017 A8 — cache JSON decode only accepts dicts; arrays/scalars → None."""
-    assert cache._deserialise("[1,2,3]") is None
-    assert cache._deserialise('"a-string"') is None
-    assert cache._deserialise("{not json") is None
+def test_a8_cache_get_rejects_non_dict_payload() -> None:
+    """OWASP 2017 A8 — the cache only deserialises dict payloads; a non-dict
+    JSON value stored in the backend is rejected (returns None / miss)."""
+    from unittest.mock import MagicMock
+
+    from schwab_marketdata_mcp.cache_backend import ClickHouseBackend
+
+    client = MagicMock()
+    client.command.return_value = None
+    result = MagicMock()
+    result.result_rows = [["[1, 2, 3]"]]  # valid JSON but a list, not a dict
+    client.query.return_value = result
+    backend = ClickHouseBackend(url="clickhouse://x", client=client)
+    # The backend's response-cache get rejects non-dict payloads.
+    assert backend.get("quotes_cache", "AAPL") is None
 
 
 # ---------------------------------------------------------------------------

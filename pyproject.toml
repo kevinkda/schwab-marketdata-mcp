@@ -1,6 +1,6 @@
 [project]
 name = "schwab-marketdata-mcp"
-version = "0.4.2"
+version = "0.5.0"
 description = "MCP server exposing 12 tools for Schwab Market Data Production API (10 endpoints + health_check + get_server_info)."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -26,10 +26,10 @@ dependencies = [
     "httpx>=0.28.1,<0.29",
     "pydantic>=2.6,<3",
     "python-dotenv>=1.0,<2",
-    "duckdb>=1.0,<2.0",
 ]
 
 [project.optional-dependencies]
+clickhouse = ["clickhouse-connect>=0.7,<1"]
 dev = [
     "pytest>=9.0.3,<10",
     "pytest-asyncio>=0.23,<2",
@@ -189,7 +189,7 @@ show_error_codes = true
 exclude = ["build/", "dist/", ".venv/", "htmlcov/"]
 
 [[tool.mypy.overrides]]
-module = ["schwab.*", "mcp.*"]
+module = ["schwab.*", "mcp.*", "clickhouse_connect.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

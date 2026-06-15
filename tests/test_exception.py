@@ -17,12 +17,13 @@ from unittest.mock import MagicMock
 import httpx
 import pytest
 
-from schwab_marketdata_mcp import cache, client
+from schwab_marketdata_mcp import client
 from schwab_marketdata_mcp.errors import (
     SchwabAuthError,
     SchwabRateLimitError,
     SchwabTransientError,
 )
+from tests.conftest import make_clickhouse_cache
 
 
 def _http_error(status: int, headers: dict[str, str] | None = None) -> httpx.HTTPStatusError:
@@ -184,20 +185,12 @@ def test_exc_malformed_json_body_yields_raw_fallback() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_exc_cache_get_failure_returns_miss(tmp_path: Path) -> None:
-    """A DuckDB error inside a getter is swallowed → treated as a cache miss."""
-    import duckdb
-
-    c = cache.Cache(tmp_path / "c.duckdb")
-    real = c._conn
-    assert real is not None
-    wrapped = MagicMock(wraps=real)
-    wrapped.execute.side_effect = duckdb.Error("query exploded")
-    c._conn = wrapped
+def test_exc_cache_get_failure_returns_miss() -> None:
+    """A backend query error is swallowed → treated as a cache miss."""
+    c, client = make_clickhouse_cache()
+    client.query.side_effect = RuntimeError("query exploded")
     # Getter swallows the error and returns None (miss) rather than raising.
     assert c.get_quote("AAPL") is None
-    c._conn = real
-    c.close()
 
 
 def test_exc_metrics_write_failure_is_swallowed(

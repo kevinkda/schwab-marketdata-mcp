@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-06-15
+
+### Changed
+
+- ⚠️ **BREAKING: the embedded DuckDB cache is removed and replaced by a
+  pluggable cache backend (v0.7 T0).** Storage is selected via
+  `SCHWAB_CACHE_BACKEND`:
+  - **memory** (default) — in-process LRU + per-entry TTL response cache,
+    zero external dependency, concurrency-safe, non-blocking. Removes the
+    single-connection DuckDB + global `RLock`, the on-disk `cache.duckdb`
+    file, file locks, the corrupt-DB quarantine machinery, and the
+    `cache_events` audit table. Derived-analysis history
+    (`option_chain_snapshots` / `iv_history` / candle OLAP) keeps **no
+    durable store**, so those degrade gracefully: `write_option_chain_snapshot`
+    → `0` rows, `aggregate_atm_iv` → all-`None` buckets,
+    `get_iv_percentile_rank` → empty-history payload, `query_candles` → `[]`.
+    All 15 tools keep working out of the box.
+  - **clickhouse** (opt-in) — `pip install schwab-marketdata-mcp[clickhouse]`
+    with `SCHWAB_CLICKHOUSE_URL` and `SCHWAB_CACHE_BACKEND=clickhouse` to
+    durably persist the derived-analysis time series and serve the real
+    ATM-IV / IV-percentile / candle-OLAP analytics.
+- **Removed the `duckdb` runtime dependency.** ClickHouse is an opt-in
+  `[clickhouse]` extra only; the default install ships with **zero new
+  dependencies** and works out of the box.
+- The full per-table public cache API (`get_quote` / `put_quote` /
+  `get_price_history` / `put_price_history` / `get_option_chain` /
+  `put_option_chain` / `get_instruments` / `put_instruments` /
+  `write_option_chain_snapshot` / `aggregate_atm_iv` /
+  `get_iv_percentile_rank` / `query_candles`) is unchanged — all 15 MCP
+  tools and their behaviour are unaffected.
+- **`get_cache_stats` / `health_check` fields changed.** The DuckDB-specific
+  `db_path` / `size_mb` / `rows_per_table` / `expired_rows` / `hit_rate_24h`
+  / `hits_24h` / `misses_24h` / `hourly_breakdown_24h` fields are replaced by
+  `backend` (active backend name) and `entries` (live response-cache entry
+  count). `hourly_breakdown` now returns `[]` and `truncate_expired` returns
+  `0` (the memory backend evicts lazily; ClickHouse rows carry TTL filters).
+- 100% line+branch coverage preserved (memory degradation, ClickHouse via a
+  stateful mocked client for end-to-end analytics round-trips, factory
+  fallback, and backend error paths). Old DuckDB-internals tests removed/adapted.
+
 ## [0.4.2] - 2026-06-10
 
 ### Changed

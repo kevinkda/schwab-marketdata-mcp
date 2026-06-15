@@ -1,7 +1,11 @@
-"""``cache.py`` unit tests — schema + TTL + concurrent + corruption.
+"""``cache.py`` unit tests — pluggable backend (v0.7 T0).
 
-Plan v0.2 sprint task #2.  Coverage target: ≥10 tests across hit /
-miss / expire / put / OLAP / corrupt / stats / disabled / hash.
+.. versionchanged:: 0.5.0
+    DuckDB removed; the cache delegates to a pluggable ``CacheBackend``
+    (memory default).  Response cache (quotes / price_history / option_chain
+    / instruments) works in-process on the memory backend; derived-analysis
+    history (snapshots / iv_history / candle OLAP) is durable only on the
+    ClickHouse backend and degrades gracefully on memory.
 """
 
 from __future__ import annotations
@@ -10,14 +14,24 @@ import json
 import threading
 import time
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 
 import pytest
 
 from schwab_marketdata_mcp import cache
+from schwab_marketdata_mcp.cache_backend import MemoryBackend
+from tests.conftest import (
+    clickhouse_inserted_rows,
+    make_clickhouse_cache,
+    seed_clickhouse_query_rows,
+)
+
+
+def _mem_cache() -> cache.Cache:
+    return cache.Cache(backend=MemoryBackend())
+
 
 # ---------------------------------------------------------------------------
-# Hit / miss / TTL — quotes_cache
+# Hit / miss / TTL — quotes (response cache, memory backend)
 # ---------------------------------------------------------------------------
 
 
@@ -38,34 +52,29 @@ def _quote_payload(symbol: str = "AAPL", *, last: float = 100.0) -> dict[str, ob
     }
 
 
-def test_get_quote_returns_none_on_empty_cache(tmp_path: Path) -> None:
-    db = tmp_path / "c.duckdb"
-    with cache.Cache(db) as c:
+def test_get_quote_returns_none_on_empty_cache() -> None:
+    with _mem_cache() as c:
         assert c.get_quote("AAPL") is None
 
 
-def test_put_then_get_quote_round_trip(tmp_path: Path) -> None:
-    db = tmp_path / "c.duckdb"
+def test_put_then_get_quote_round_trip() -> None:
     payload = _quote_payload("AAPL", last=170.5)
-    with cache.Cache(db) as c:
+    with _mem_cache() as c:
         c.put_quote("AAPL", payload)
         got = c.get_quote("AAPL")
     assert got is not None
     assert got["AAPL"]["quote"]["lastPrice"] == 170.5
 
 
-def test_quote_expires_after_ttl(tmp_path: Path) -> None:
-    db = tmp_path / "c.duckdb"
-    with cache.Cache(db) as c:
+def test_quote_expires_after_ttl() -> None:
+    with _mem_cache() as c:
         c.put_quote("AAPL", _quote_payload("AAPL"), ttl_seconds=0)
-        # ttl_seconds=0 → any non-zero age expires
         time.sleep(0.05)
         assert c.get_quote("AAPL") is None
 
 
-def test_quote_replace_overwrites_existing(tmp_path: Path) -> None:
-    db = tmp_path / "c.duckdb"
-    with cache.Cache(db) as c:
+def test_quote_replace_overwrites_existing() -> None:
+    with _mem_cache() as c:
         c.put_quote("AAPL", _quote_payload("AAPL", last=100.0))
         c.put_quote("AAPL", _quote_payload("AAPL", last=200.0))
         got = c.get_quote("AAPL")
@@ -73,7 +82,7 @@ def test_quote_replace_overwrites_existing(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# price_history_cache — OLAP-style upsert + window query
+# price_history — response cache round-trip + OLAP query (ClickHouse)
 # ---------------------------------------------------------------------------
 
 
@@ -98,119 +107,108 @@ def _ph_params() -> dict[str, object]:
     }
 
 
-def test_price_history_put_and_get_returns_candles(tmp_path: Path) -> None:
-    db = tmp_path / "c.duckdb"
+def test_price_history_put_and_get_returns_payload() -> None:
     base = datetime.now(tz=UTC).replace(microsecond=0) - timedelta(days=2)
-    raw = {"candles": [_candle(base + timedelta(minutes=30 * i)) for i in range(5)]}
-    with cache.Cache(db) as c:
+    raw = {"candles": [_candle(base + timedelta(minutes=30 * i)) for i in range(5)], "empty": False}
+    with _mem_cache() as c:
         c.put_price_history(_ph_params(), raw)
         got = c.get_price_history(_ph_params())
     assert got is not None
     assert len(got["candles"]) == 5
-    assert got["_cache_source"] == "duckdb"
 
 
-def test_price_history_recent_candle_forces_refresh(tmp_path: Path) -> None:
-    """Candles inside the 1 h recent window with stale fetched_at → miss."""
-    db = tmp_path / "c.duckdb"
-    now = datetime.now(tz=UTC).replace(microsecond=0)
-    raw = {"candles": [_candle(now - timedelta(minutes=5))]}
-    with cache.Cache(db) as c:
-        c.put_price_history(_ph_params(), raw)
-        # Manually backdate fetched_at to simulate stale recent candle.
-        assert c._conn is not None
-        c._conn.execute(
-            "UPDATE price_history_cache SET fetched_at = ?",
-            [datetime.now(tz=UTC).replace(tzinfo=None) - timedelta(minutes=5)],
-        )
-        got = c.get_price_history(_ph_params())
-    assert got is None
-
-
-def test_price_history_query_candles_window(tmp_path: Path) -> None:
-    db = tmp_path / "c.duckdb"
+def test_price_history_query_candles_window_clickhouse() -> None:
     base = datetime.now(tz=UTC).replace(microsecond=0) - timedelta(days=10)
     raw = {"candles": [_candle(base + timedelta(days=i), close=1.0 + i) for i in range(10)]}
-    with cache.Cache(db) as c:
-        c.put_price_history(_ph_params(), raw)
-        rows = c.query_candles("VOO", base + timedelta(days=2), base + timedelta(days=5))
+    c, client = make_clickhouse_cache()
+    c.put_price_history(_ph_params(), raw)
+    # Seed the read path with the candle rows that were appended.
+    appended = clickhouse_inserted_rows(client, series="price_history_candles")
+    seed_clickhouse_query_rows(client, appended)
+    rows = c.query_candles("VOO", base + timedelta(days=2), base + timedelta(days=5))
     assert len(rows) == 4
     assert all(r["period_type"] == "DAY" for r in rows)
 
 
+def test_query_candles_memory_degrades_to_empty() -> None:
+    with _mem_cache() as c:
+        assert c.query_candles("VOO", datetime(2020, 1, 1), datetime(2030, 1, 1)) == []
+
+
 # ---------------------------------------------------------------------------
-# option_chain_cache — hashed key
+# option_chain_cache + instruments_cache — hashed key (memory)
 # ---------------------------------------------------------------------------
 
 
-def test_option_chain_put_and_get_round_trip(tmp_path: Path) -> None:
-    db = tmp_path / "c.duckdb"
+def test_option_chain_put_and_get_round_trip() -> None:
     params = {"symbol": "AAPL", "contract_type": "CALL", "strike_count": 5}
     raw = {"underlyingSymbol": "AAPL", "callExpDateMap": {}}
-    with cache.Cache(db) as c:
+    with _mem_cache() as c:
         c.put_option_chain(params, raw)
         got = c.get_option_chain(params)
-        # Different params → different hash → miss.
         miss = c.get_option_chain({**params, "contract_type": "PUT"})
     assert got == raw
     assert miss is None
 
 
-def test_option_chain_expires(tmp_path: Path) -> None:
-    db = tmp_path / "c.duckdb"
-    with cache.Cache(db) as c:
+def test_option_chain_expires() -> None:
+    with _mem_cache() as c:
         c.put_option_chain({"symbol": "AAPL"}, {"x": 1}, ttl_seconds=0)
         time.sleep(0.05)
         assert c.get_option_chain({"symbol": "AAPL"}) is None
 
 
-# ---------------------------------------------------------------------------
-# instruments_cache
-# ---------------------------------------------------------------------------
-
-
-def test_instruments_round_trip(tmp_path: Path) -> None:
-    db = tmp_path / "c.duckdb"
+def test_instruments_round_trip() -> None:
     params = {"symbols": ["AAPL", "MSFT"], "projection": "FUNDAMENTAL"}
     raw = {"instruments": [{"symbol": "AAPL"}]}
-    with cache.Cache(db) as c:
+    with _mem_cache() as c:
         c.put_instruments(params, raw)
         got = c.get_instruments(params)
     assert got == raw
 
 
 # ---------------------------------------------------------------------------
-# Stats / truncate / disabled / corrupt
+# Stats / reset / env flags / singleton
 # ---------------------------------------------------------------------------
 
 
-def test_stats_reflects_writes_and_events(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_stats_reports_backend_and_entries(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(cache.ENV_CACHE_ENABLED, "true")
-    db = tmp_path / "c.duckdb"
-    with cache.Cache(db) as c:
+    with _mem_cache() as c:
         c.put_quote("AAPL", _quote_payload("AAPL"))
-        c.get_quote("AAPL")  # hit
-        c.get_quote("MSFT")  # miss
         stats = c.get_stats()
     d = stats.to_dict()
-    assert d["rows_per_table"]["quotes_cache"] == 1
-    assert d["hits_24h"] >= 1
-    assert d["misses_24h"] >= 1
+    assert d["backend"] == "memory"
+    assert d["entries"] == 1
     assert d["enabled"] is True
-    assert d["size_mb"] > 0
 
 
-def test_truncate_expired_removes_rows(tmp_path: Path) -> None:
-    db = tmp_path / "c.duckdb"
-    with cache.Cache(db) as c:
-        c.put_quote("AAPL", _quote_payload("AAPL"), ttl_seconds=0)
-        c.put_option_chain({"symbol": "AAPL"}, {"x": 1}, ttl_seconds=0)
-        time.sleep(0.05)
-        n = c.truncate_expired()
-        rows = c.get_stats().rows_per_table
-    assert n >= 0  # DuckDB DELETE returns row count via fetchone
-    assert rows["quotes_cache"] == 0
-    assert rows["option_chain_cache"] == 0
+def test_stats_size_error_degrades_to_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+    backend = MemoryBackend()
+    monkeypatch.setattr(backend, "size", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+    assert cache.Cache(backend=backend).get_stats().entries == 0
+
+
+def test_reset_clears_response_cache() -> None:
+    with _mem_cache() as c:
+        c.put_quote("AAPL", _quote_payload("AAPL"))
+        c.reset()
+        assert c.get_quote("AAPL") is None
+
+
+def test_truncate_expired_returns_zero() -> None:
+    with _mem_cache() as c:
+        assert c.truncate_expired() == 0
+
+
+def test_hourly_breakdown_returns_empty() -> None:
+    with _mem_cache() as c:
+        assert c.hourly_breakdown(hours=24) == []
+
+
+def test_hourly_breakdown_invalid_hours_raises() -> None:
+    with _mem_cache() as c, pytest.raises(ValueError):
+        c.hourly_breakdown(hours=0)
 
 
 def test_disabled_singleton_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -232,125 +230,84 @@ def test_bypass_flag(monkeypatch: pytest.MonkeyPatch) -> None:
     ["1", "true", "yes", "on", "TRUE", "Yes", "On", " true ", "  1 ", "\tyes\n"],
 )
 def test_cache_enabled_truthy_matrix(monkeypatch: pytest.MonkeyPatch, raw: str) -> None:
-    """v0.4.2: opt-in flag accepts 1/true/yes/on across case + surrounding whitespace."""
     monkeypatch.setenv(cache.ENV_CACHE_ENABLED, raw)
     assert cache.cache_enabled() is True
 
 
 @pytest.mark.parametrize("raw", ["0", "false", "no", "off", "FALSE", "nope", "2", "", "   "])
 def test_cache_enabled_falsy_matrix(monkeypatch: pytest.MonkeyPatch, raw: str) -> None:
-    """Anything outside the truthy set (incl. empty / whitespace-only) → disabled."""
     monkeypatch.setenv(cache.ENV_CACHE_ENABLED, raw)
     assert cache.cache_enabled() is False
 
 
 def test_cache_enabled_unset_defaults_off(monkeypatch: pytest.MonkeyPatch) -> None:
-    """v0.4.2 BREAKING: unset env var now defaults to disabled (was on)."""
     monkeypatch.delenv(cache.ENV_CACHE_ENABLED, raising=False)
     assert cache.cache_enabled() is False
     cache.reset_cache_singleton()
     assert cache.get_cache() is None
 
 
-def test_concurrent_writes_do_not_lose_rows(tmp_path: Path) -> None:
-    db = tmp_path / "c.duckdb"
-    c = cache.Cache(db)
+def test_cache_singleton_is_lazy(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(cache.ENV_CACHE_ENABLED, "true")
+    monkeypatch.delenv("SCHWAB_CACHE_BACKEND", raising=False)
+    cache.reset_cache_singleton()
+    a = cache.get_cache()
+    b = cache.get_cache()
+    assert a is b
+    assert a is not None and a.backend.name == "memory"
+    cache.reset_cache_singleton()
+
+
+def test_get_cache_init_failure_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(cache.ENV_CACHE_ENABLED, "true")
+    cache.reset_cache_singleton()
+    monkeypatch.setattr(
+        cache,
+        "get_cache_backend",
+        lambda: (_ for _ in ()).throw(RuntimeError("init boom")),
+    )
+    assert cache.get_cache() is None
+    cache.reset_cache_singleton()
+
+
+def test_default_backend_is_memory(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("SCHWAB_CACHE_BACKEND", raising=False)
+    assert cache.Cache().backend.name == "memory"
+
+
+def test_price_history_invalid_params_returns_none() -> None:
+    with _mem_cache() as c:
+        assert c.get_price_history({"symbol": "VOO"}) is None
+        c.put_price_history({"symbol": "VOO"}, {"candles": []})  # no-op, missing keys
+
+
+def test_concurrent_writes_do_not_lose_rows() -> None:
+    c = _mem_cache()
     try:
-        N_WRITERS = 4
-        WRITES_PER = 25
+        n_writers = 4
+        writes_per = 25
         errors: list[BaseException] = []
 
         def writer(prefix: str) -> None:
             try:
-                for i in range(WRITES_PER):
-                    c.put_quote(f"{prefix}{i:03d}"[:10], _quote_payload(f"{prefix}{i:03d}"[:10]))
+                for i in range(writes_per):
+                    sym = f"{prefix}{i:03d}"[:10]
+                    c.put_quote(sym, _quote_payload(sym))
             except BaseException as exc:
                 errors.append(exc)
 
-        threads = [threading.Thread(target=writer, args=(f"S{n}",)) for n in range(N_WRITERS)]
+        threads = [threading.Thread(target=writer, args=(f"S{n}",)) for n in range(n_writers)]
         for t in threads:
             t.start()
         for t in threads:
             t.join(timeout=20)
         assert not errors, f"writer errors: {errors!r}"
-        rows = c.get_stats().rows_per_table["quotes_cache"]
-        assert rows == N_WRITERS * WRITES_PER
+        assert c.get_stats().entries == n_writers * writes_per
     finally:
         c.close()
-
-
-def test_corrupt_db_is_quarantined_and_reopened(tmp_path: Path) -> None:
-    db = tmp_path / "c.duckdb"
-    db.write_bytes(b"not a duckdb file at all")
-    c = cache.Cache(db)
-    try:
-        # Reopen path should have produced a working DB.
-        c.put_quote("AAPL", _quote_payload("AAPL"))
-        got = c.get_quote("AAPL")
-    finally:
-        c.close()
-    assert got is not None
-    backups = list(tmp_path.glob("c.duckdb.corrupt-*"))
-    assert backups, "expected a quarantined backup file"
-
-
-def test_default_db_path_under_xdg_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    state = tmp_path / "alt-state"
-    state.mkdir()
-    monkeypatch.setenv("XDG_STATE_HOME", str(state))
-    p = cache.default_db_path()
-    assert str(p).startswith(str(state))
-    assert p.name == cache.CACHE_DB_FILENAME
-
-
-def test_cache_singleton_is_lazy(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    state = tmp_path / "alt-state"
-    state.mkdir()
-    monkeypatch.setenv("XDG_STATE_HOME", str(state))
-    monkeypatch.setenv(cache.ENV_CACHE_ENABLED, "true")
-    cache.reset_cache_singleton()
-    a = cache.get_cache()
-    b = cache.get_cache()
-    assert a is b
-    cache.reset_cache_singleton()
-
-
-def test_get_quote_unknown_symbol_records_miss(tmp_path: Path) -> None:
-    db = tmp_path / "c.duckdb"
-    with cache.Cache(db) as c:
-        c.get_quote("NOPE")
-        c.get_quote("NOPE")
-        stats = c.get_stats()
-    assert stats.misses_24h >= 2
-
-
-def test_price_history_invalid_params_returns_none(tmp_path: Path) -> None:
-    db = tmp_path / "c.duckdb"
-    with cache.Cache(db) as c:
-        # Missing required keys
-        assert c.get_price_history({"symbol": "VOO"}) is None
-        c.put_price_history({"symbol": "VOO"}, {"candles": []})
-    # No write should have happened.
-    with cache.Cache(db) as c:
-        rows = c.get_stats().rows_per_table["price_history_cache"]
-    assert rows == 0
-
-
-@pytest.mark.posix_only
-def test_db_file_has_secure_perms(tmp_path: Path) -> None:
-    import stat
-
-    db = tmp_path / "c.duckdb"
-    with cache.Cache(db):
-        pass
-    mode = stat.S_IMODE(db.stat().st_mode)
-    assert mode == 0o600
 
 
 def test_serialise_round_trip_with_default_str() -> None:
-    """Ensure datetime / Enum-ish values don't break the JSON encoder."""
-    from datetime import UTC, datetime
-
     payload = {"AAPL": {"now": datetime(2026, 1, 1, tzinfo=UTC)}}
     s = json.dumps(payload, default=str)
     assert "2026-01-01" in s
@@ -358,16 +315,15 @@ def test_serialise_round_trip_with_default_str() -> None:
 
 # ---------------------------------------------------------------------------
 # Integration smoke — call_endpoint wires cache hit/miss into payload
+# (memory backend; the response cache works in-process)
 # ---------------------------------------------------------------------------
 
 
 async def test_call_endpoint_records_cache_status_on_miss(
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
     use_fake_backend: None,
 ) -> None:
-    """First call → miss + write; second call → hit (no API)."""
-    del use_fake_backend  # consumed via fixture
+    del use_fake_backend
     monkeypatch.setenv("SCHWAB_CACHE_ENABLED", "true")
     from schwab_marketdata_mcp import server
 
@@ -409,8 +365,8 @@ async def test_get_cache_stats_tool(monkeypatch: pytest.MonkeyPatch, use_fake_ba
 
     out = await server.get_cache_stats()
     assert out["enabled"] is True
-    assert "rows_per_table" in out
-    assert "size_mb" in out
+    assert out["backend"] == "memory"
+    assert "entries" in out
 
 
 async def test_health_check_includes_cache_fields(use_fake_backend: None) -> None:
@@ -419,102 +375,5 @@ async def test_health_check_includes_cache_fields(use_fake_backend: None) -> Non
 
     out = await server.health_check()
     assert "cache_enabled" in out
-    assert "cache_size_mb" in out
-    assert "cache_hit_rate_24h" in out
-
-
-# ---------------------------------------------------------------------------
-# hourly_breakdown — Sprint v0.3 task #2 (observability candidate D)
-# ---------------------------------------------------------------------------
-
-
-def test_hourly_breakdown_empty(tmp_path: Path) -> None:
-    """No events at all → empty list."""
-    db = tmp_path / "c.duckdb"
-    with cache.Cache(db) as c:
-        out = c.hourly_breakdown(hours=24)
-    assert out == []
-
-
-def test_hourly_breakdown_aggregates_correctly(tmp_path: Path) -> None:
-    """Mixed hits/misses/expired across two distinct hours group correctly."""
-    db = tmp_path / "c.duckdb"
-    now_naive = datetime.now(tz=UTC).replace(tzinfo=None)
-    hour_a = now_naive.replace(minute=0, second=0, microsecond=0) - timedelta(hours=2)
-    hour_b = hour_a + timedelta(hours=1)
-    rows: list[tuple[datetime, str, str]] = [
-        (hour_a + timedelta(minutes=5), "hit", "quotes_cache"),
-        (hour_a + timedelta(minutes=10), "hit", "quotes_cache"),
-        (hour_a + timedelta(minutes=15), "miss", "quotes_cache"),
-        (hour_a + timedelta(minutes=20), "expired", "quotes_cache"),
-        (hour_b + timedelta(minutes=5), "hit", "quotes_cache"),
-        (hour_b + timedelta(minutes=10), "miss", "quotes_cache"),
-        (hour_b + timedelta(minutes=15), "miss", "quotes_cache"),
-        # ``write`` events must not pollute hit/miss/expired counts.
-        (hour_b + timedelta(minutes=20), "write", "quotes_cache"),
-    ]
-    with cache.Cache(db) as c:
-        assert c._conn is not None
-        for ts, kind, table in rows:
-            c._conn.execute(
-                "INSERT INTO cache_events (ts, kind, table_name) VALUES (?, ?, ?)",
-                [ts, kind, table],
-            )
-        out = c.hourly_breakdown(hours=24)
-    assert len(out) == 2
-    by_hour = {row["hour_utc"]: row for row in out}
-    a_iso = hour_a.isoformat() + "Z"
-    b_iso = hour_b.isoformat() + "Z"
-    assert by_hour[a_iso]["hits"] == 2
-    assert by_hour[a_iso]["misses"] == 1
-    assert by_hour[a_iso]["expired"] == 1
-    assert by_hour[b_iso]["hits"] == 1
-    assert by_hour[b_iso]["misses"] == 2
-    assert by_hour[b_iso]["expired"] == 0
-    # Chronological ordering: oldest hour first.
-    assert out[0]["hour_utc"] == a_iso
-    assert out[1]["hour_utc"] == b_iso
-
-
-def test_hourly_breakdown_respects_window(tmp_path: Path) -> None:
-    """Events older than the window are excluded."""
-    db = tmp_path / "c.duckdb"
-    now_naive = datetime.now(tz=UTC).replace(tzinfo=None)
-    inside_hour = now_naive.replace(minute=30, second=0, microsecond=0) - timedelta(hours=1)
-    outside_hour = now_naive - timedelta(hours=25)
-    with cache.Cache(db) as c:
-        assert c._conn is not None
-        c._conn.execute(
-            "INSERT INTO cache_events (ts, kind, table_name) VALUES (?, ?, ?)",
-            [inside_hour, "hit", "quotes_cache"],
-        )
-        c._conn.execute(
-            "INSERT INTO cache_events (ts, kind, table_name) VALUES (?, ?, ?)",
-            [outside_hour, "hit", "quotes_cache"],
-        )
-        out_24 = c.hourly_breakdown(hours=24)
-        out_48 = c.hourly_breakdown(hours=48)
-    # 24h window: only the inside event.
-    assert len(out_24) == 1
-    assert out_24[0]["hits"] == 1
-    # 48h window: both events visible (in two distinct hour buckets).
-    assert sum(row["hits"] for row in out_48) == 2
-
-
-def test_hourly_breakdown_invalid_hours_raises(tmp_path: Path) -> None:
-    db = tmp_path / "c.duckdb"
-    with cache.Cache(db) as c, pytest.raises(ValueError):
-        c.hourly_breakdown(hours=0)
-
-
-async def test_get_cache_stats_includes_hourly_breakdown(
-    monkeypatch: pytest.MonkeyPatch,
-    use_fake_backend: None,
-) -> None:
-    """get_cache_stats MCP tool exposes the new field."""
-    del use_fake_backend
-    from schwab_marketdata_mcp import server
-
-    out = await server.get_cache_stats()
-    assert "hourly_breakdown_24h" in out
-    assert isinstance(out["hourly_breakdown_24h"], list)
+    assert "cache_backend" in out
+    assert "cache_entries" in out

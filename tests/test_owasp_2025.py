@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from schwab_marketdata_mcp import cache, server
+from schwab_marketdata_mcp.cache_backend import MemoryBackend
 from schwab_marketdata_mcp.errors import redact_secrets
 from schwab_marketdata_mcp.security import resolve_token_path
 
@@ -172,11 +173,11 @@ def test_a07_insecure_token_perms_blocks_use(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_a08_cache_write_read_integrity_round_trip(tmp_path: Path) -> None:
-    """OWASP 2025 A08 — data written to the cache is returned byte-faithful
+def test_a08_cache_write_read_integrity_round_trip() -> None:
+    """OWASP 2025 A08 — data written to the cache is returned faithfully
     (no silent truncation / mutation in the supply path)."""
     payload = {"AAPL": {"quote": {"lastPrice": 123.45, "totalVolume": 9876543}}}
-    with cache.Cache(tmp_path / "c.duckdb") as c:
+    with cache.Cache(backend=MemoryBackend()) as c:
         c.put_quote("AAPL", payload)
         got = c.get_quote("AAPL")
     assert got == payload

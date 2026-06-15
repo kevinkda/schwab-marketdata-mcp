@@ -42,24 +42,23 @@ def _safe_token_state() -> tuple[TokenState, dict[str, Any] | None]:
 def _safe_cache_summary() -> dict[str, Any]:
     """Best-effort cache stats; never raises into the caller.
 
-    Returns ``{enabled, size_mb, hit_rate_24h}`` — the minimal
-    surface ``health_check`` needs.  If the cache cannot be opened
-    (disk full, permission, corrupt), we still return a summary with
-    ``enabled`` honest and the numeric fields zeroed.
+    Returns ``{enabled, backend, entries}`` — the minimal surface
+    ``health_check`` needs.  If the cache cannot be constructed we still
+    return a summary with ``enabled`` honest and the fields zeroed.
     """
     if not cache_enabled():
-        return {"enabled": False, "size_mb": 0.0, "hit_rate_24h": None}
+        return {"enabled": False, "backend": None, "entries": 0}
     cache = get_cache()
     if cache is None:
-        return {"enabled": False, "size_mb": 0.0, "hit_rate_24h": None}
+        return {"enabled": False, "backend": None, "entries": 0}
     try:
         stats = cache.get_stats()
     except Exception:
-        return {"enabled": True, "size_mb": 0.0, "hit_rate_24h": None}
+        return {"enabled": True, "backend": None, "entries": 0}
     return {
         "enabled": stats.enabled,
-        "size_mb": round(stats.size_mb, 4),
-        "hit_rate_24h": stats.hit_rate_24h,
+        "backend": stats.backend,
+        "entries": stats.entries,
     }
 
 
@@ -104,8 +103,8 @@ async def health_check_impl() -> dict[str, Any]:
         "last_errors": err_window["last_errors"],
         "platform_supported": True,
         "cache_enabled": cache_summary["enabled"],
-        "cache_size_mb": cache_summary["size_mb"],
-        "cache_hit_rate_24h": cache_summary["hit_rate_24h"],
+        "cache_backend": cache_summary["backend"],
+        "cache_entries": cache_summary["entries"],
     }
 
 
@@ -161,47 +160,33 @@ async def get_server_info_impl(*, server_version: str) -> dict[str, Any]:
 
 
 async def get_cache_stats_impl() -> dict[str, Any]:
-    """Local DuckDB cache health — never calls Schwab.
+    """Local cache backend health — never calls Schwab.
 
-    Returns a dict with ``db_path``, ``enabled``, ``size_mb``,
-    ``rows_per_table``, ``expired_rows``, ``hit_rate_24h``,
-    ``hits_24h``, ``misses_24h``, ``hourly_breakdown_24h`` so an
-    LLM agent can reason about cache effectiveness before deciding
-    whether to bypass.
+    Returns ``{backend, enabled, entries}`` so an LLM agent can reason
+    about cache effectiveness before deciding whether to bypass.
+
+    .. versionchanged:: 0.5.0
+        The DuckDB-specific ``db_path`` / ``size_mb`` / ``rows_per_table`` /
+        ``expired_rows`` / ``hit_rate_24h`` / ``hits_24h`` / ``misses_24h`` /
+        ``hourly_breakdown_24h`` fields are replaced by ``backend`` (active
+        backend name) + ``entries`` (live response-cache entry count).
     """
     cache = get_cache()
     if cache is None:
         return {
-            "db_path": None,
+            "backend": None,
             "enabled": False,
-            "size_mb": 0.0,
-            "rows_per_table": {},
-            "expired_rows": {},
-            "hit_rate_24h": None,
-            "hits_24h": 0,
-            "misses_24h": 0,
-            "hourly_breakdown_24h": [],
+            "entries": 0,
         }
     try:
-        out = cache.get_stats().to_dict()
+        return cache.get_stats().to_dict()
     except Exception as exc:  # pragma: no cover - cache stats must never break tools
         return {
-            "db_path": str(cache.db_path),
+            "backend": cache.backend.name,
             "enabled": True,
-            "size_mb": 0.0,
-            "rows_per_table": {},
-            "expired_rows": {},
-            "hit_rate_24h": None,
-            "hits_24h": 0,
-            "misses_24h": 0,
-            "hourly_breakdown_24h": [],
+            "entries": 0,
             "error": type(exc).__name__,
         }
-    try:
-        out["hourly_breakdown_24h"] = cache.hourly_breakdown(hours=24)
-    except Exception:  # pragma: no cover - breakdown is best-effort
-        out["hourly_breakdown_24h"] = []
-    return out
 
 
 __all__ = ["get_cache_stats_impl", "get_server_info_impl", "health_check_impl"]

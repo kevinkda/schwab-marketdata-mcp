@@ -417,10 +417,10 @@ async def get_server_info() -> dict[str, Any]:
 @mcp.tool(
     name="get_cache_stats",
     description=(
-        "Local DuckDB cache health (offline-safe; never calls Schwab). "
-        "Returns db_path, enabled flag, size_mb, rows_per_table, "
-        "expired_rows, hit_rate_24h, hits_24h, misses_24h so the agent "
-        "can reason about cache effectiveness before bypassing."
+        "Local cache backend health (offline-safe; never calls Schwab). "
+        "Returns backend (memory|clickhouse), enabled flag, and entries "
+        "(live response-cache entry count) so the agent can reason about "
+        "cache effectiveness before bypassing."
     ),
 )
 async def get_cache_stats() -> dict[str, Any]:
