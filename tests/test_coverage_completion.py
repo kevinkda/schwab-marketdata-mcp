@@ -223,10 +223,10 @@ async def test_runtime_get_client_double_checked_lock_race(
     """
     import asyncio
 
-    from schwab_marketdata_mcp.tools import _runtime
+    from schwab_marketdata_mcp.tools import _client_runtime, _runtime
 
     _runtime.reset_client_cache()
-    _runtime._lock = asyncio.Lock()  # fresh lock bound to this running loop
+    _client_runtime._lock = asyncio.Lock()  # fresh lock bound to this running loop
     sentinel = object()
     calls = {"n": 0}
 
@@ -234,18 +234,18 @@ async def test_runtime_get_client_double_checked_lock_race(
         calls["n"] += 1
         return sentinel
 
-    real_make = _runtime.make_rate_limited
-    monkeypatch.setattr(_runtime, "make_rate_limited", _make_once)
+    real_make = _client_runtime.make_rate_limited
+    monkeypatch.setattr(_client_runtime, "make_rate_limited", _make_once)
     try:
-        await _runtime._lock.acquire()
+        await _client_runtime._lock.acquire()
         task_a = asyncio.create_task(_runtime.get_client())
         task_b = asyncio.create_task(_runtime.get_client())
         await asyncio.sleep(0)
         await asyncio.sleep(0)
-        _runtime._lock.release()
+        _client_runtime._lock.release()
         results = await asyncio.gather(task_a, task_b)
     finally:
-        monkeypatch.setattr(_runtime, "make_rate_limited", real_make)
+        monkeypatch.setattr(_client_runtime, "make_rate_limited", real_make)
 
     assert results[0] is sentinel
     assert results[1] is sentinel
@@ -1199,33 +1199,33 @@ async def test_runtime_get_client_concurrent_second_waiter(monkeypatch: pytest.M
     """
     import asyncio as _asyncio
 
-    from schwab_marketdata_mcp.tools import _runtime
+    from schwab_marketdata_mcp.tools import _client_runtime, _runtime
 
     _runtime.reset_client_cache()
     monkeypatch.setenv("SCHWAB_MOCK_BACKEND", "fixtures")
 
-    sentinel = _runtime.make_rate_limited()
+    sentinel = _client_runtime.make_rate_limited()
     build_calls = {"n": 0}
 
     def _should_not_build() -> Any:  # pragma: no cover - asserted never called
         build_calls["n"] += 1
         return sentinel
 
-    monkeypatch.setattr(_runtime, "make_rate_limited", _should_not_build)
+    monkeypatch.setattr(_client_runtime, "make_rate_limited", _should_not_build)
 
-    real_lock = _runtime._lock
+    real_lock = _client_runtime._lock
 
     class _SideEffectLock:
         async def __aenter__(self) -> Any:
             # Simulate another coroutine having built the client while we
             # were waiting to acquire the lock.
-            _runtime._client = sentinel
+            _client_runtime._client = sentinel
             return await real_lock.__aenter__()
 
         async def __aexit__(self, *a: Any) -> Any:
             return await real_lock.__aexit__(*a)
 
-    monkeypatch.setattr(_runtime, "_lock", _SideEffectLock())
+    monkeypatch.setattr(_client_runtime, "_lock", _SideEffectLock())
     out = await _runtime.get_client()
     assert out is sentinel
     assert build_calls["n"] == 0  # inner re-check was False → build skipped

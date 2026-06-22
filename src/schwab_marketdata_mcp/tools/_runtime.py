@@ -1,22 +1,22 @@
-"""Shared runtime helper for the 7 tool modules.
+"""Shared call orchestration for the tool modules.
 
 Each business tool needs:
 
-1. A lazily-constructed :class:`RateLimitedClient` (so tests can override
-   the backend via env) — created **once per server process**.
-2. A small wrapper that runs ``raise_for_status()`` on the schwab-py
-   response so HTTP errors surface as :class:`httpx.HTTPStatusError`, which
-   the rate-limited client translates into our structured exceptions.
-3. ``metrics.time_tool`` to record latency / status.
-4. Optional DuckDB cache lookup / store hooks (plan v0.2 sprint task #2).
+1. A wrapper that runs ``raise_for_status()`` on the schwab-py response so
+   HTTP errors surface as :class:`httpx.HTTPStatusError`, which the
+   rate-limited client translates into our structured exceptions.
+2. ``metrics.time_tool`` to record latency / status.
+3. Optional cache lookup / store hooks (pluggable backend; opt-in).
 
-This module centralises that boilerplate so each tool file is just three
-lines of business logic.
+Client lifecycle (authentication/connection) lives in
+:mod:`._client_runtime` and is **decoupled from the cache** — the auth path
+does not depend on caching. :func:`get_client` and :func:`reset_client_cache`
+are re-exported here for backward compatibility with the tool modules and
+the test suite.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -24,36 +24,10 @@ from typing import Any
 import httpx
 
 from ..cache import Cache, cache_bypass, get_cache
-from ..client import RateLimitedClient, make_rate_limited
 from ..metrics import time_tool
+from ._client_runtime import get_client, reset_client_cache
 
 log = logging.getLogger(__name__)
-
-_lock = asyncio.Lock()
-_client: RateLimitedClient | None = None
-
-
-async def get_client() -> RateLimitedClient:
-    """Lazily instantiate the rate-limited client (one per process)."""
-    global _client
-    if _client is None:
-        async with _lock:
-            # Double-checked locking.  The False arc of the guard below (a
-            # racing coroutine populated `_client` while we waited on the lock)
-            # is concurrency-only and is exercised by
-            # test_runtime_get_client_double_checked_lock_race, but coverage.py
-            # cannot reliably record a branch arc that spans an asyncio task
-            # switch, so the arc is excluded with `# pragma: no branch` rather
-            # than dropping the 100% gate.
-            if _client is None:  # pragma: no branch
-                _client = make_rate_limited()
-    return _client
-
-
-def reset_client_cache() -> None:
-    """Clear the cached client.  Used by integration tests between scenarios."""
-    global _client
-    _client = None
 
 
 CacheLookup = Callable[[Cache], "dict[str, Any] | None"]
