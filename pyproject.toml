@@ -21,7 +21,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "mcp>=1.27.2,<2.0",
+    "mcp>=1.28.1,<2.0",
     "schwab-py>=1.5.1,<1.6",
     "httpx>=0.28.1,<0.29",
     "pydantic>=2.6,<3",
@@ -31,11 +31,11 @@ dependencies = [
 [project.optional-dependencies]
 clickhouse = ["clickhouse-connect>=0.7,<1"]
 dev = [
-    "pytest>=9.1.0,<10",
+    "pytest>=9.1.1,<10",
     "pytest-asyncio>=1.4.0,<2",
     "pytest-cov>=7.1.0,<8",
     "respx>=0.22.0,<0.24",
-    "ruff>=0.15.17,<1",
+    "ruff>=0.15.20,<1",
     "mypy>=1.10,<2",
     "bandit>=1.7,<2",
     # pip is a build-time tool (not a runtime import); pinned to >=26.1.2 to
